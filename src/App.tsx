@@ -1,35 +1,54 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { useState, useEffect } from 'react';
+import CloisonneEngine from './plugins/cloisonne/CloisonneEngine';
+import './App.css';
 
-function App() {
-  const [count, setCount] = useState(0)
-
-  return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+interface PluginConfig {
+  lessonId: string;
+  studentName?: string;
+  theme?: 'dark' | 'light';
+  settings?: Record<string, any>;
 }
 
-export default App
+function App() {
+  const [config, setConfig] = useState<PluginConfig | null>(null);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Security check: verify origin if needed
+      // if (event.origin !== 'https://mothership-domain.com') return;
+
+      if (event.data && event.data.type === 'INIT_PLUGIN') {
+        console.log('Plugin Initialized with config:', event.data.config);
+        setConfig(event.data.config);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+
+    // Initial handshake to let parent know we are ready
+    window.parent.postMessage({ type: 'PLUGIN_READY' }, '*');
+
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  if (!config) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-6">
+          <div className="w-16 h-16 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+          <p className="text-blue-400 font-black text-xs uppercase tracking-[0.5em] animate-pulse">
+            Waiting for Mothership Connection...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-screen overflow-hidden">
+      <CloisonneEngine config={config} />
+    </div>
+  );
+}
+
+export default App;
