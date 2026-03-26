@@ -39,7 +39,6 @@ const FiligreePreview = ({ points, thickness }: { points: { x: number; y: number
 
   return (
     <mesh>
-      {/* 视觉上使用 Tube，正交俯视看起来就是带圆帽的完美线段，绝不扭曲 */}
       <tubeGeometry args={[curve, Math.max(20, points.length * 2), thickness / 2, 8, false]} />
       <meshStandardMaterial color="#D4AF37" metalness={0.8} roughness={0.3} emissive="#D4AF37" emissiveIntensity={0.1} />
     </mesh>
@@ -52,7 +51,7 @@ export default function CloisonneEngine({ config }: { config: any }) {
   const [strokes, setStrokes] = useState<{ id: string; points: { x: number; y: number }[]; thickness: number }[]>([]);
   const [currentPoints, setCurrentPoints] = useState<{ x: number; y: number }[]>([]);
   const [symmetry, setSymmetry] = useState(true);
-  const [wireThickness, setWireThickness] = useState(0.1); // 默认粗细
+  const [wireThickness, setWireThickness] = useState(0.1); 
   const [isExporting, setIsExporting] = useState(false);
   const [exportStatus, setExportStatus] = useState('');
 
@@ -94,11 +93,11 @@ export default function CloisonneEngine({ config }: { config: any }) {
     }
   };
 
-  // --- 打印导出管线 (后台 2D Boolean -> SVG -> 3D 挤出) ---
+  // --- 打印导出管线 (修复：纯透明底板防溢出) ---
   const handleExport = () => {
     if (strokes.length === 0 || isExporting) return;
     setIsExporting(true);
-    setExportStatus('正在合并交叉线条...');
+    setExportStatus('正在融合线条交叉点...');
 
     setTimeout(() => {
       // 1. 创建高分辨率离线 Canvas
@@ -108,42 +107,51 @@ export default function CloisonneEngine({ config }: { config: any }) {
       const ctx = canvas.getContext('2d');
       if (!ctx) { setIsExporting(false); return; }
 
-      ctx.fillStyle = 'white'; ctx.fillRect(0, 0, res, res);
-      // 将 Three.js 的 [-5, 5] 坐标系映射到 Canvas 的 [0, 2048]
+      // 🛑 核心修复点 1：清理为完全透明背景，坚决不画白色底板！
+      ctx.clearRect(0, 0, res, res);
+      
+      // 坐标映射
       ctx.translate(res / 2, res / 2);
       ctx.scale(res / 10, -res / 10);
 
-      // 2. 绘制黑色线段实现完美的 Boolean 并集
+      // 2. 绘制纯黑墨迹
       ctx.strokeStyle = 'black';
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
       strokes.forEach(s => {
         if (s.points.length < 2) return;
-        ctx.lineWidth = s.thickness; // 精确映射粗细
+        ctx.lineWidth = s.thickness; // 粗细严格对齐
         ctx.beginPath();
         ctx.moveTo(s.points[0].x, s.points[0].y);
         for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
         ctx.stroke();
       });
 
-      setExportStatus('正在生成 3D 打印实体...');
+      setExportStatus('正在提取纯净 3D 模型...');
 
-      // 3. 转为 Base64 防 404 崩溃
       const base64Img = canvas.toDataURL('image/png');
 
-      // 4. 提取轮廓并挤出
+      // 3. 高精度提取轮廓
       ImageTracer.imageToSVG(base64Img, (svgString: string) => {
         try {
           const loader = new SVGLoader();
           const svgData = loader.parse(svgString);
           const shapes: THREE.Shape[] = [];
-          svgData.paths.forEach(path => shapes.push(...SVGLoader.createShapes(path)));
 
-          // 挤出深度为 0.2，保证打印厚度
+          svgData.paths.forEach(path => {
+            // 🛑 核心修复点 2：双重过滤，如果由于反锯齿产生了灰/白色背景层，直接抛弃！
+            const style = (path as any).userData?.style;
+            const fill = style?.fill;
+            if (fill && (fill.includes('255,255,255') || fill.includes('#ffffff'))) return;
+            
+            shapes.push(...SVGLoader.createShapes(path));
+          });
+
+          // 4. 只挤出纯净的金丝
           const geometry = new THREE.ExtrudeGeometry(shapes, { depth: 0.2, bevelEnabled: false });
 
-          // 将挤出后的模型尺寸和位置逆向映射回原比例
+          // 逆向映射尺寸
           const scaleDown = 10 / res;
           geometry.scale(scaleDown, -scaleDown, 1);
           geometry.translate(-5, 5, 0);
@@ -163,28 +171,25 @@ export default function CloisonneEngine({ config }: { config: any }) {
           setIsExporting(false);
           setExportStatus('');
         }
-      }, { ltres: 0.1, qtres: 0.1, scale: 1 }); // 高精度追踪
-    }, 100); // 略微延时让 UI 渲染 Loading
+      }, { ltres: 0.1, qtres: 0.1, scale: 1 }); // 高精度追踪配置
+    }, 100); 
   };
 
   return (
     <div className="relative w-full h-full bg-[#020617] flex gap-2 p-4 overflow-hidden">
       {/* 核心 2D 画板区 */}
       <div className="flex-1 rounded-[24px] overflow-hidden border border-white/10 bg-[#0a0f1e] relative">
-        <Canvas gl={{ antialias: true, preserveDrawingBuffer: true }}>
-          {/* 正交相机：永远平视，没有透视形变 */}
+        <Canvas>
           <OrthographicCamera makeDefault position={[0, 0, 10]} zoom={60} />
           <ambientLight intensity={0.8} />
           <Environment preset="studio" />
           
           <group>
-            {/* 隐形射线接收板 */}
             <mesh position={[0, 0, -0.01]} onPointerDown={e => handlePointer(e, 'down')} onPointerMove={e => handlePointer(e, 'move')} onPointerUp={e => handlePointer(e, 'up')}>
               <planeGeometry args={[20, 20]} />
               <meshBasicMaterial visible={false} />
             </mesh>
 
-            {/* 绘制渲染区 */}
             {strokes.map(s => <FiligreePreview key={s.id} points={s.points} thickness={s.thickness} />)}
             {currentPoints.length > 1 && (
               <>
@@ -194,24 +199,22 @@ export default function CloisonneEngine({ config }: { config: any }) {
             )}
           </group>
 
-          {/* 辅助线 */}
           {symmetry && <mesh position={[0, 0, -0.1]}><planeGeometry args={[0.01, 20]} /><meshBasicMaterial color="#3b82f6" transparent opacity={0.2} /></mesh>}
 
-          {/* 彻底锁死旋转，仅允许右键平移和滚轮缩放 */}
           <OrbitControls enableRotate={false} enableDamping />
         </Canvas>
 
         {/* 顶部标签 */}
-        <div className="absolute top-6 left-6 z-20 px-4 py-2 bg-blue-600/20 backdrop-blur-md border border-blue-500/30 rounded-full flex items-center gap-2">
+        <div className="absolute top-6 left-6 z-20 px-4 py-2 bg-blue-600/20 backdrop-blur-md border border-blue-500/30 rounded-full flex items-center gap-2 text-slate-200">
           <Zap className="w-4 h-4 text-blue-400" />
-          <span className="text-xs text-blue-400 font-bold tracking-widest uppercase">掐丝珐琅引擎 2D-PRO v3.6</span>
+          <span className="text-xs text-blue-400 font-bold tracking-widest uppercase italic">REAL-TIME FILIGREE ENGINE v3.7</span>
         </div>
 
         {/* 底部控制台 */}
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-6 bg-slate-900/95 backdrop-blur-xl p-4 rounded-2xl border border-white/10 shadow-2xl">
           <button onClick={() => setStrokes([])} className="p-3 bg-white/5 hover:bg-red-500/20 text-slate-400 rounded-xl transition-colors"><Trash2 className="w-5 h-5" /></button>
           
-          <button onClick={() => setSymmetry(!symmetry)} className={`px-6 py-3 rounded-xl text-xs font-bold tracking-widest transition-colors ${symmetry ? 'bg-blue-600 text-white' : 'bg-white/10 text-slate-400'}`}>
+          <button onClick={() => setSymmetry(!symmetry)} className={`px-6 py-3 rounded-xl text-xs font-bold tracking-widest transition-colors ${symmetry ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40' : 'bg-white/10 text-slate-400'}`}>
             对称模式: {symmetry ? '开' : '关'}
           </button>
 
@@ -223,7 +226,7 @@ export default function CloisonneEngine({ config }: { config: any }) {
             <input type="range" min="0.02" max="0.3" step="0.01" value={wireThickness} onChange={e => setWireThickness(parseFloat(e.target.value))} className="w-full accent-blue-500 cursor-pointer" />
           </div>
 
-          <button onClick={handleExport} disabled={isExporting} className={`flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs tracking-widest transition-all ${isExporting ? 'opacity-50 cursor-not-allowed' : ''}`}>
+          <button onClick={handleExport} disabled={isExporting} className={`flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs tracking-widest transition-all ${isExporting ? 'opacity-50 cursor-not-allowed' : 'shadow-lg shadow-blue-900/40'}`}>
             <Layers3 className="w-4 h-4" />
             {isExporting ? '生成中...' : '导出打印模型'}
           </button>
@@ -241,8 +244,8 @@ export default function CloisonneEngine({ config }: { config: any }) {
       </div>
 
       {/* 右侧说明面板 */}
-      <div className="w-64 bg-[#0a0f1e] rounded-[24px] border border-white/10 p-6 flex flex-col gap-4">
-        <div>
+      <div className="w-64 bg-[#0a0f1e] rounded-[24px] border border-white/10 p-6 flex flex-col gap-4 shadow-xl relative overflow-hidden">
+        <div className="relative z-10">
           <h3 className="text-[10px] font-black text-slate-500 tracking-widest mb-1">WORKSPACE</h3>
           <p className="text-base font-bold text-white">掐丝珐琅实验室</p>
         </div>
@@ -253,7 +256,7 @@ export default function CloisonneEngine({ config }: { config: any }) {
         </div>
         <div className="mt-auto pt-4 border-t border-white/10 flex justify-between text-[10px] text-slate-500 font-bold tracking-wider italic">
           <span>总笔画: {strokes.length}</span>
-          <span>STABLE_V3.6</span>
+          <span>STABLE_V3.7</span>
         </div>
       </div>
     </div>
