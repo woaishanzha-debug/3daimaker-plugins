@@ -1,9 +1,9 @@
 import { useState, useRef, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Environment, ContactShadows } from '@react-three/drei';
+import { OrbitControls, Environment, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLExporter } from 'three-stdlib';
-import { Trash2, Download, Zap, Move3D, MousePointer2, BoxSelect } from 'lucide-react';
+import { Trash2, Download, Zap, Move3D, MousePointer2, BoxSelect, Settings2 } from 'lucide-react';
 
 interface Point3D {
   x: number;
@@ -14,25 +14,31 @@ interface Point3D {
 interface Stroke {
   id: string;
   points: Point3D[];
+  thickness: number;
   isMirror?: boolean;
 }
 
-// 扁平金丝截面定义 (Shape: 0.03 x 0.15 矩形)
-const filigreeShape = new THREE.Shape();
-const w = 0.015; // 半宽
-const h = 0.075; // 半高
-filigreeShape.moveTo(-w, -h);
-filigreeShape.lineTo(w, -h);
-filigreeShape.lineTo(w, h);
-filigreeShape.lineTo(-w, h);
-filigreeShape.lineTo(-w, -h);
+// 动态生成扁平金丝截面
+const getFiligreeShape = (thickness: number) => {
+  const shape = new THREE.Shape();
+  const w = thickness / 4; // 宽度较窄
+  const h = thickness * 1.5; // 高度较高 (0.03 x 0.15 比例)
+  shape.moveTo(-w, -h);
+  shape.lineTo(w, -h);
+  shape.lineTo(w, h);
+  shape.lineTo(-w, h);
+  shape.lineTo(-w, -h);
+  return shape;
+};
 
-const FiligreeExtrusion = ({ points }: { points: Point3D[] }) => {
+const FiligreeExtrusion = ({ points, thickness }: { points: Point3D[]; thickness: number }) => {
   const curve = useMemo(() => {
     if (points.length < 2) return null;
     const v3Points = points.map(p => new THREE.Vector3(p.x, p.y, p.z));
     return new THREE.CatmullRomCurve3(v3Points);
   }, [points]);
+
+  const shape = useMemo(() => getFiligreeShape(thickness), [thickness]);
 
   if (!curve) return null;
 
@@ -40,7 +46,7 @@ const FiligreeExtrusion = ({ points }: { points: Point3D[] }) => {
     <mesh>
       <extrudeGeometry 
         args={[
-          filigreeShape, 
+          shape, 
           { 
             extrudePath: curve, 
             bevelEnabled: false, 
@@ -50,10 +56,10 @@ const FiligreeExtrusion = ({ points }: { points: Point3D[] }) => {
       />
       <meshStandardMaterial 
         color="#D4AF37" 
-        metalness={0.9} 
-        roughness={0.1} 
+        metalness={0.8} 
+        roughness={0.3} 
         emissive="#D4AF37"
-        emissiveIntensity={0.2}
+        emissiveIntensity={0.1}
       />
     </mesh>
   );
@@ -64,12 +70,30 @@ export default function CloisonneEngine({ config }: { config: any }) {
   const [strokes, setStroking] = useState<Stroke[]>([]);
   const [currentPoints, setCurrentPoints] = useState<Point3D[]>([]);
   const [symmetry, setSymmetry] = useState(true);
+  const [wireThickness, setWireThickness] = useState(0.05); // 笔画粗细
   const sceneRef = useRef<THREE.Group>(null);
   const orbitalRef = useRef<any>(null);
 
+  // 移动平均平滑算法 (Moving Average)
+  const smoothPoints = (points: Point3D[]) => {
+    if (points.length < 3) return points;
+    const smoothed: Point3D[] = [];
+    smoothed.push(points[0]); // 保留起点
+    
+    for (let i = 1; i < points.length - 1; i++) {
+      smoothed.push({
+        x: (points[i - 1].x + points[i].x + points[i + 1].x) / 3,
+        y: (points[i - 1].y + points[i].y + points[i + 1].y) / 3,
+        z: (points[i - 1].z + points[i].z + points[i + 1].z) / 3,
+      });
+    }
+    
+    smoothed.push(points[points.length - 1]); // 保留终点
+    return smoothed;
+  };
+
   const handlePointerDown = (e: any) => {
     e.stopPropagation();
-    // 强制停止轨道控制器，防止绘图时相机移动
     if (orbitalRef.current) orbitalRef.current.enabled = false;
     setCurrentPoints([e.point]);
   };
@@ -88,14 +112,19 @@ export default function CloisonneEngine({ config }: { config: any }) {
   };
 
   const handlePointerUp = () => {
-    if (currentPoints.length > 1) {
+    if (currentPoints.length > 2) {
+      // 在存储前应用平滑算法
+      const rawPoints = currentPoints;
+      const filteredPoints = smoothPoints(rawPoints);
+      
       const id = Math.random().toString(36).substr(2, 9);
-      const newStrokes: Stroke[] = [{ id, points: currentPoints }];
+      const newStrokes: Stroke[] = [{ id, points: filteredPoints, thickness: wireThickness }];
       
       if (symmetry) {
         newStrokes.push({ 
           id: id + '_mirror', 
-          points: currentPoints.map(p => ({ x: -p.x, y: p.y, z: p.z })),
+          points: filteredPoints.map(p => ({ x: -p.x, y: p.y, z: p.z })),
+          thickness: wireThickness,
           isMirror: true
         });
       }
@@ -130,25 +159,30 @@ export default function CloisonneEngine({ config }: { config: any }) {
   const clearCanvas = () => setStroking([]);
 
   return (
-    <div className="relative w-full h-full bg-[#020617] flex gap-1 p-4">
+    <div className="relative w-full h-full bg-[#020617] flex gap-1 p-4 font-sans text-slate-200">
       
-      <div className="flex-1 rounded-[32px] overflow-hidden border border-white/5 bg-[#0a0f1e] relative">
-        <Canvas shadows={{ type: THREE.PCFShadowMap }} dpr={[1, 2]}>
-          <PerspectiveCamera makeDefault position={[0, 0, 12]} fov={50} />
-          <ambientLight intensity={0.5} />
-          <pointLight position={[10, 10, 10]} intensity={1} castShadow />
-          <spotLight position={[-10, 10, 10]} angle={0.15} penumbra={1} />
+      <div className="flex-1 rounded-[32px] overflow-hidden border border-white/5 bg-[#0a0f1e] relative shadow-2xl">
+        <Canvas 
+          shadows={{ type: THREE.PCFShadowMap }} 
+          dpr={[1, 2]}
+          camera={{ position: [0, 0, 12], fov: 50 }}
+        >
+          {/* 光照修复：使用对称的光照配置确保左右颜色对齐 */}
+          <ambientLight intensity={0.6} />
+          <directionalLight position={[5, 5, 5]} intensity={1.2} castShadow />
+          <directionalLight position={[-5, 5, -5]} intensity={0.8} />
+          <pointLight position={[0, 10, 0]} intensity={0.5} />
           
-          <Environment preset="city" />
-          <ContactShadows position={[0, -6, 0]} opacity={0.4} scale={20} blur={2} />
+          <Environment preset="studio" />
+          <ContactShadows position={[0, -6, 0]} opacity={0.4} scale={20} blur={2.5} />
 
           {/* 核心实体 Group - 仅用于导出 */}
           <group ref={sceneRef}>
-            {strokes.map(s => <FiligreeExtrusion key={s.id} points={s.points} />)}
+            {strokes.map(s => <FiligreeExtrusion key={s.id} points={s.points} thickness={s.thickness} />)}
             {currentPoints.length > 1 && (
               <>
-                <FiligreeExtrusion points={currentPoints} />
-                {symmetry && <FiligreeExtrusion points={currentPoints.map(p => ({ x: -p.x, y: p.y, z: p.z }))} />}
+                <FiligreeExtrusion points={currentPoints} thickness={wireThickness} />
+                {symmetry && <FiligreeExtrusion points={currentPoints.map(p => ({ x: -p.x, y: p.y, z: p.z }))} thickness={wireThickness} />}
               </>
             )}
           </group>
@@ -175,19 +209,19 @@ export default function CloisonneEngine({ config }: { config: any }) {
           <OrbitControls ref={orbitalRef} enableDamping minDistance={5} maxDistance={20} />
         </Canvas>
 
-        {/* 顶部 UI */}
+        {/* 顶部标签 */}
         <div className="absolute top-6 left-6 z-20 flex items-center gap-3">
           <div className="px-5 py-2.5 bg-blue-600/10 backdrop-blur-xl border border-blue-500/30 rounded-full flex items-center gap-2">
             <Zap className="w-4 h-4 text-blue-400 animate-pulse" />
             <span className="text-[10px] text-blue-400 font-black uppercase tracking-[0.2em]">
-              实时掐丝引擎 v3.0
+              实时掐丝引擎 v3.1
             </span>
           </div>
         </div>
 
-        {/* 底部 UI */}
+        {/* 底部浮动控制条 */}
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 flex items-center gap-4 bg-slate-900/90 backdrop-blur-2xl p-4 rounded-[32px] border border-white/10 shadow-2xl">
-          <button onClick={clearCanvas} className="p-3.5 bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-400 rounded-2xl transition-all">
+          <button onClick={clearCanvas} className="p-3.5 bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-400 rounded-2xl transition-all active:scale-90">
             <Trash2 className="w-5 h-5" />
           </button>
           
@@ -195,7 +229,7 @@ export default function CloisonneEngine({ config }: { config: any }) {
 
           <button 
             onClick={() => setSymmetry(!symmetry)}
-            className={`flex items-center gap-3 px-6 py-3.5 rounded-2xl text-[10px] font-black tracking-widest uppercase transition-all ${symmetry ? 'bg-blue-600 text-white' : 'bg-white/5 text-slate-500'}`}
+            className={`flex items-center gap-3 px-6 py-3.5 rounded-2xl text-[10px] font-black tracking-widest uppercase transition-all ${symmetry ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40' : 'bg-white/5 text-slate-500'}`}
           >
             <BoxSelect className="w-4 h-4" />
             对称模式
@@ -210,37 +244,70 @@ export default function CloisonneEngine({ config }: { config: any }) {
         </div>
       </div>
       
-      {/* 侧边信息面板 */}
-      <div className="w-72 bg-[#0a0f1e] rounded-[32px] border border-white/5 p-6 flex flex-col gap-6">
+      {/* 右侧工作区面板 */}
+      <div className="w-80 bg-[#0a0f1e] rounded-[32px] border border-white/5 p-6 flex flex-col gap-6 shadow-xl">
         <div className="space-y-1">
-          <h3 className="text-sm font-black text-white/40 uppercase tracking-widest">工作区</h3>
-          <p className="text-lg font-black text-white italic">掐丝珐琅实验室</p>
+          <h3 className="text-sm font-black text-white/30 uppercase tracking-[0.2em]">工作区</h3>
+          <p className="text-xl font-black text-white italic tracking-tight">掐丝珐琅实验室</p>
         </div>
 
-        <div className="flex-1 space-y-4 mt-4">
-          <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-2">
-            <div className="flex items-center gap-2 text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2">
-              <MousePointer2 className="w-3 h-3" /> 绘制提示
+        {/* 工具配置区 */}
+        <div className="space-y-6 mt-2">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                <Settings2 className="w-3.5 h-3.5" /> 画笔粗细
+              </div>
+              <span className="text-[10px] font-black text-blue-400 px-2 py-0.5 bg-blue-400/10 rounded-md">
+                {(wireThickness * 20).toFixed(1)}mm
+              </span>
             </div>
-            <p className="text-xs text-slate-400 leading-relaxed font-medium">
-              直接在 3D 视图中拖拽鼠标或触控绘制扁平金丝。
+            <input 
+              type="range" 
+              min="0.01" 
+              max="0.1" 
+              step="0.01" 
+              value={wireThickness}
+              onChange={(e) => setWireThickness(parseFloat(e.target.value))}
+              className="w-full h-1.5 bg-white/5 rounded-full appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 transition-all"
+            />
+            <div className="flex justify-between text-[8px] font-black text-white/20 uppercase tracking-tighter">
+              <span>极细</span>
+              <span>加粗</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 提示信息 */}
+        <div className="flex-1 space-y-4 mt-2">
+          <div className="p-5 bg-white/5 rounded-[24px] border border-white/5 space-y-2.5">
+            <div className="flex items-center gap-2 text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">
+              <MousePointer2 className="w-3.5 h-3.5" /> 绘制提示
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed font-medium">
+              直接在 3D 视图中拖拽鼠标绘制金丝。手绘线条已自动开启<span className="text-blue-400/80">抗震平滑</span>处理。
             </p>
           </div>
           
-          <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-2">
-            <div className="flex items-center gap-2 text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2">
-              <Move3D className="w-3 h-3" /> 视角控制
+          <div className="p-5 bg-white/5 rounded-[24px] border border-white/5 space-y-2.5">
+            <div className="flex items-center gap-2 text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">
+              <Move3D className="w-3.5 h-3.5" /> 视角控制
             </div>
-            <p className="text-xs text-slate-400 leading-relaxed font-medium">
-              右键或双指平移旋转视图，滚轮缩放。
+            <p className="text-[11px] text-slate-400 leading-relaxed font-medium">
+              右键平移，左键旋转，滚轮缩放。视角不会影响绘图坐标。
             </p>
           </div>
         </div>
 
+        {/* 状态统计 */}
         <div className="mt-auto pt-6 border-t border-white/5">
-          <div className="flex justify-between items-center text-[10px] font-black text-white/20 uppercase tracking-widest">
-            <span>笔画数: {strokes.length}</span>
-            <span>Ver: P0_B16</span>
+          <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-white/40">笔画数:</span>
+              <span className="text-white">{strokes.length}</span>
+            </div>
+            <span className="text-white/20">Ver: P0_B16_PRO</span>
           </div>
         </div>
       </div>
