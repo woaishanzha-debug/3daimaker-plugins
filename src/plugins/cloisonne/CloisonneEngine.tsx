@@ -133,7 +133,7 @@ export default function CloisonneEngine({ config }: { config: any }) {
     <div className="relative w-full h-full bg-[#020617] flex gap-1 p-4">
       
       <div className="flex-1 rounded-[32px] overflow-hidden border border-white/5 bg-[#0a0f1e] relative">
-        <Canvas shadows dpr={[1, 2]}>
+        <Canvas shadows={{ type: THREE.PCFShadowMap }} dpr={[1, 2]}>
           <PerspectiveCamera makeDefault position={[0, 0, 12]} fov={50} />
           <ambientLight intensity={0.5} />
           <pointLight position={[10, 10, 10]} intensity={1} castShadow />
@@ -214,7 +214,7 @@ export default function CloisonneEngine({ config }: { config: any }) {
       <div className="w-72 bg-[#0a0f1e] rounded-[32px] border border-white/5 p-6 flex flex-col gap-6">
         <div className="space-y-1">
           <h3 className="text-sm font-black text-white/40 uppercase tracking-widest">工作区</h3>
-          <p className="text-lg font-black text-white italic">景泰蓝掐丝实验室</p>
+          <p className="text-lg font-black text-white italic">掐丝珐琅实验室</p>
         </div>
 
         <div className="flex-1 space-y-4 mt-4">
