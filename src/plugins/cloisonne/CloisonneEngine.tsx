@@ -1,343 +1,254 @@
 import { useState, useRef, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, ContactShadows } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLExporter, SVGLoader } from 'three-stdlib';
-import { Trash2, Download, Zap, MousePointer2, BoxSelect, Settings2 } from 'lucide-react';
+import { Trash2, Zap, Layers3 } from 'lucide-react';
+// @ts-ignore
+import ImageTracer from 'imagetracerjs'; // 核心资产追踪工具
 
-interface Point3D {
-  x: number;
-  y: number;
-  z: number;
-}
+// --- 辅助工具函数 ---
 
-interface Stroke {
-  id: string;
-  points: Point3D[];
-  thickness: number;
-  isMirror?: boolean;
-}
-
-// 动态生成渲染用的 3D 截面 (Rendering Track)
-const getFiligreeShape = (thickness: number) => {
-  const shape = new THREE.Shape();
-  const w = thickness / 4;
-  const h = thickness * 1.5;
-  shape.moveTo(-w, -h);
-  shape.lineTo(w, -h);
-  shape.lineTo(w, h);
-  shape.lineTo(-w, h);
-  shape.lineTo(-w, -h);
-  return shape;
+// 数据点移动平均平滑过滤器 (去除抖动)
+const smoothPoints = (points: { x: number; y: number }[]): { x: number; y: number }[] => {
+  if (points.length < 3) return points;
+  const smoothed = [points[0]];
+  const windowSize = 5; // 平滑窗口大小
+  for (let i = 1; i < points.length - 1; i++) {
+    const start = Math.max(0, i - Math.floor(windowSize / 2));
+    const end = Math.min(points.length, i + Math.floor(windowSize / 2) + 1);
+    const windowPoints = points.slice(start, end);
+    smoothed.push({
+      x: windowPoints.reduce((sum, p) => sum + p.x, 0) / windowPoints.length,
+      y: windowPoints.reduce((sum, p) => sum + p.y, 0) / windowPoints.length
+    });
+  }
+  smoothed.push(points[points.length - 1]);
+  return smoothed;
 };
 
-const FiligreeExtrusion = ({ points, thickness }: { points: Point3D[]; thickness: number }) => {
+// --- 实时 3D 渲染组件 ---
+
+// 金丝实时挤出几何体组件 (扁平矩形截面)
+const FiligreeMesh = ({ points, thickness }: { points: { x: number; y: number }[], thickness: number }) => {
   const curve = useMemo(() => {
     if (points.length < 2) return null;
-    const v3Points = points.map(p => new THREE.Vector3(p.x, p.y, p.z));
+    const v3Points = points.map(p => new THREE.Vector3(p.x, p.y, 0));
     return new THREE.CatmullRomCurve3(v3Points);
   }, [points]);
 
-  const shape = useMemo(() => getFiligreeShape(thickness), [thickness]);
+  // 定义扁平金丝的 Shape 截面 (例如宽0.03，高0.15)
+  const wireShape = useMemo(() => {
+    const s = new THREE.Shape();
+    // 根据厚度微调截面比例
+    const h = 0.15;
+    const w = thickness * 0.5; // 宽度的一半
+    s.moveTo(-w, -h/2);
+    s.lineTo(w, -h/2);
+    s.lineTo(w, h/2);
+    s.lineTo(-w, h/2);
+    s.lineTo(-w, -h/2);
+    return s;
+  }, [thickness]);
 
   if (!curve) return null;
 
   return (
-    <mesh>
-      <extrudeGeometry 
-        args={[
-          shape, 
-          { 
-            extrudePath: curve, 
-            bevelEnabled: false, 
-            steps: Math.max(points.length * 2, 64) 
-          }
-        ]} 
-      />
-      <meshStandardMaterial 
-        color="#D4AF37" 
-        metalness={0.8} 
-        roughness={0.3} 
-        emissive="#D4AF37"
-        emissiveIntensity={0.1}
-      />
+    <mesh castShadow receiveShadow>
+      <extrudeGeometry args={[wireShape, {
+        extrudePath: curve,
+        bevelEnabled: false,
+        steps: 128
+      }]} />
+      <meshStandardMaterial color="#D4AF37" metalness={0.9} roughness={0.2} emissive="#D4AF37" emissiveIntensity={0.15} />
     </mesh>
   );
 };
 
+// --- 主引擎组件 ---
+
 export default function CloisonneEngine({ config }: { config: any }) {
   console.log('Engine started with lesson:', config?.lessonId);
-  const [strokes, setStroking] = useState<Stroke[]>([]);
-  const [currentPoints, setCurrentPoints] = useState<Point3D[]>([]);
+  const [strokes, setStrokes] = useState<{ id: string; points: { x: number; y: number }[]; thickness: number }[]>([]);
+  const [currentPoints, setCurrentPoints] = useState<{ x: number; y: number }[]>([]);
   const [symmetry, setSymmetry] = useState(true);
-  const [wireThickness, setWireThickness] = useState(0.05);
+  const [wireThickness, setWireThickness] = useState(0.05); // 默认 0.05
   const sceneRef = useRef<THREE.Group>(null);
-  const orbitalRef = useRef<any>(null);
+  const isDrawing = useRef(false);
 
-  const smoothPoints = (points: Point3D[]) => {
-    if (points.length < 3) return points;
-    const smoothed: Point3D[] = [];
-    smoothed.push(points[0]);
-    for (let i = 1; i < points.length - 1; i++) {
-      smoothed.push({
-        x: (points[i - 1].x + points[i].x + points[i + 1].x) / 3,
-        y: (points[i - 1].y + points[i].y + points[i + 1].y) / 3,
-        z: (points[i - 1].z + points[i].z + points[i + 1].z) / 3,
-      });
-    }
-    smoothed.push(points[points.length - 1]);
-    return smoothed;
-  };
+  // --- 交互核心逻辑 (射线检测与平滑) ---
 
-  const handlePointerDown = (e: any) => {
-    e.stopPropagation();
-    if (orbitalRef.current) orbitalRef.current.enabled = false;
-    setCurrentPoints([e.point]);
-  };
-
-  const handlePointerMove = (e: any) => {
-    if (currentPoints.length === 0) return;
-    e.stopPropagation();
-    const p = e.point;
-    const lastPoint = currentPoints[currentPoints.length - 1];
-    const dist = new THREE.Vector3(p.x, p.y, p.z).distanceTo(new THREE.Vector3(lastPoint.x, lastPoint.y, lastPoint.z));
-    if (dist > 0.05) {
-      setCurrentPoints([...currentPoints, p]);
-    }
-  };
-
-  const handlePointerUp = () => {
-    if (currentPoints.length > 2) {
-      const filteredPoints = smoothPoints(currentPoints);
-      const id = Math.random().toString(36).substr(2, 9);
-      const newStrokes: Stroke[] = [{ id, points: filteredPoints, thickness: wireThickness }];
-      if (symmetry) {
-        newStrokes.push({ 
-          id: id + '_mirror', 
-          points: filteredPoints.map(p => ({ x: -p.x, y: p.y, z: p.z })),
-          thickness: wireThickness,
-          isMirror: true
-        });
+  const handlePointer = (e: any, type: string) => {
+    if (type === 'down') {
+      e.stopPropagation(); // 防止与 OrbitControls 冲突
+      e.target.setPointerCapture(e.pointerId); // 捕获光标
+      isDrawing.current = true;
+      if (e.point) setCurrentPoints([new THREE.Vector2(e.point.x, e.point.y)]);
+    } else if (type === 'move' && isDrawing.current && e.point) {
+      const p = new THREE.Vector2(e.point.x, e.point.y);
+      if (currentPoints.length > 0) {
+        // 数据过滤：仅在移动距离超过阈值时记录点，降低算力
+        if (p.distanceTo(currentPoints[currentPoints.length - 1]) > 0.03) {
+          setCurrentPoints([...currentPoints, p]);
+        }
+      } else {
+        setCurrentPoints([p]);
       }
-      setStroking([...strokes, ...newStrokes]);
+    } else if (type === 'up') {
+      e.target.releasePointerCapture(e.pointerId); // 释放光标
+      if (isDrawing.current && currentPoints.length > 1) {
+        // 1. 应用自动平滑过滤器 (去除抖动)
+        const smoothed = smoothPoints(currentPoints);
+
+        const id = Math.random().toString(36);
+        // 记录当前粗细
+        const newStrokes = [{ id, points: smoothed, thickness: wireThickness }];
+        if (symmetry) {
+          newStrokes.push({
+            id: id + '_m',
+            points: smoothed.map(pt => ({ x: -pt.x, y: pt.y })),
+            thickness: wireThickness
+          });
+        }
+        setStrokes([...strokes, ...newStrokes]);
+      }
+      setCurrentPoints([]);
+      isDrawing.current = false;
     }
-    setCurrentPoints([]);
-    if (orbitalRef.current) orbitalRef.current.enabled = true;
   };
 
-  /**
-   * 核心重构：双轨制导出逻辑 (Export Track)
-   * 采用内存 SVG 解析方案，确保生成流形（Manifold）可打印实体
-   */
+  // --- 核心导出逻辑 (栅格化 Boolean 并集管线) ---
+
+  const [isExporting, setIsExporting] = useState(false);
+
   const handleExport = () => {
-    const allExportStrokes = [...strokes];
-    if (currentPoints.length > 2) {
-      allExportStrokes.push({ id: 'temp', points: currentPoints, thickness: wireThickness });
-      if (symmetry) {
-        allExportStrokes.push({ 
-          id: 'temp_m', 
-          points: currentPoints.map(p => ({ x: -p.x, y: p.y, z: p.z })), 
-          thickness: wireThickness 
-        });
+    if (strokes.length === 0 || isExporting) return;
+    setIsExporting(true);
+
+    // 1. 创建高分辨率隐藏 2D Canvas (栅格化 Boolean 合并中枢)
+    const rasterCanvas = document.createElement('canvas');
+    const res = 2048; // 高分辨率保证精度
+    rasterCanvas.width = res; rasterCanvas.height = res;
+    const ctx = rasterCanvas.getContext('2d');
+    if (!ctx) { setIsExporting(false); return; }
+
+    // 初始化白色背景
+    ctx.fillStyle = 'white'; ctx.fillRect(0, 0, res, res);
+    // 坐标系变换：将 Three.js [-5, 5] 坐标系映射到 Canvas [0, res] 坐标系，并反转Y轴
+    ctx.translate(res / 2, res / 2);
+    ctx.scale(res / 10, -res / 10); // 1个世界单位 = 204.8像素
+
+    // 2. 将所有笔画按粗细绘制成黑色墨迹 (利用渲染引擎实现完美 Boolean Union)
+    ctx.fillStyle = 'black'; ctx.strokeStyle = 'black';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+    strokes.forEach(s => {
+      if (s.points.length < 2) return;
+      // 缩放笔画粗细到 2D 坐标系中
+      ctx.lineWidth = s.thickness;
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      for (let i = 1; i < s.points.length; i++) {
+        ctx.lineTo(s.points[i].x, s.points[i].y);
       }
-    }
-
-    if (allExportStrokes.length === 0) return;
-
-    // 步骤 A: 生成内存 SVG 字符串
-    // 我们将每个笔触转换为一个厚度路径。为了让 SVGLoader 正确识别，我们使用 stroke-width
-    const scale = 1000; // 放大系数以匹配 3D 打印常见的 mm 单位
-    let svgPaths = '';
-    allExportStrokes.forEach(s => {
-      const d = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${(p.x * scale).toFixed(2)} ${(p.y * scale).toFixed(2)}`).join(' ');
-      const sw = (s.thickness * scale).toFixed(2);
-      // 注意：这里使用 stroke-width，SVGLoader 会解析为 ShapePath
-      svgPaths += `<path d="${d}" fill="none" stroke="black" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+      ctx.stroke();
     });
 
-    const svgString = `
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="-10000 -10000 20000 20000">
-        ${svgPaths}
-      </svg>
-    `;
+    // 3. 轮廓追踪 (Path Tracing)：将 2D 栅格墨迹追踪为封闭轮廓 SVG
+    const imgData = ctx.getImageData(0, 0, res, res);
+    // 使用 imagetracerjs 瞬间提取轮廓 (设定高精度配置)
+    ImageTracer.imageToSVG(imgData, (svgString: string) => {
+      // 4. 一次性垂直挤出：解析轮廓 SVG 并生成完美的、无交叉的 3D 实体模型
+      const loader = new SVGLoader();
+      const svgData = loader.parse(svgString);
 
-    // 步骤 B & C: 解析 SVG 并执行合并挤出 (Extrude)
-    const loader = new SVGLoader();
-    const svgData = loader.parse(svgString);
-    const shapes: THREE.Shape[] = [];
+      const shapes : THREE.Shape[] = [];
+      svgData.paths.forEach(path => {
+        shapes.push(...SVGLoader.createShapes(path));
+      });
 
-    svgData.paths.forEach((path) => {
-      // SVGLoader.createShapes 会将路径转换为 2D Shape
-      // 为了处理 stroke-width，我们需要使用 SVGLoader 提供的 getStrokedPoints 逻辑（若支持）
-      // 或者更简单：因为我们要导出流形，最好的办法是让 ExtrudeGeometry 接收合并后的 Shape
-      const pathShapes = SVGLoader.createShapes(path);
-      shapes.push(...pathShapes);
-    });
+      // 挤出深度 ( bevelEnabled: false 保证 3D 打印直边)
+      const geometry = new THREE.ExtrudeGeometry(shapes, { depth: 0.15, bevelEnabled: false });
 
-    // 步骤 D: 生成唯一实体并导出
-    // 如果 SVGLoader 直接解析线段可能没有闭合 Shape，
-    // 这里我们采用一个工业级 Trick：直接基于原始点构建 Extrude 以确保 100% 成功
-    const exportGroup = new THREE.Group();
-    
-    // 真正的“流形”优化：将所有笔画合并到一个 Geometry 中
-    allExportStrokes.forEach(s => {
-      const curve = new THREE.CatmullRomCurve3(s.points.map(p => new THREE.Vector3(p.x, p.y, p.z)));
-      const geometry = new THREE.TubeGeometry(curve, Math.max(s.points.length * 2, 64), s.thickness / 2, 8, false);
-      const mesh = new THREE.Mesh(geometry);
-      exportGroup.add(mesh);
-    });
+      // 修复 ImageTracer 的坐标偏移，将其移回 Three.js 场景中心 (-5, 5 映射)
+      const inverseScale = 10 / res;
+      geometry.scale(inverseScale, -inverseScale, 1);
+      geometry.translate(-5, 5, 0); // 逆向移位
 
-    const exporter = new STLExporter();
-    const result = exporter.parse(exportGroup, { binary: true });
-    const blob = new Blob([result as any], { type: 'application/octet-stream' });
-    
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `cloisonne_manifold_${Date.now()}.stl`;
-    link.click();
-    URL.revokeObjectURL(url);
-
-    window.parent.postMessage({ 
-      type: 'ACTION_COMPLETE', 
-      action: 'EXPORT_SUCCESS',
-      metadata: { strokeCount: strokes.length, isManifold: true }
-    }, '*');
+      // 5. STL 导出闭环
+      const exporter = new STLExporter();
+      const result = exporter.parse(new THREE.Mesh(geometry), { binary: true });
+      const url = URL.createObjectURL(new Blob([result as any], { type: 'application/octet-stream' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = 'cloisonne_printable.stl'; link.click();
+      window.parent.postMessage({ type: 'ACTION_COMPLETE', action: 'EXPORT_SUCCESS' }, '*');
+      setIsExporting(false);
+    }, { ltres: 0.1, qtres: 0.1, scale: 1 }); // 高分辨率配置
   };
-
-  const clearCanvas = () => setStroking([]);
 
   return (
-    <div className="relative w-full h-full bg-[#020617] flex gap-1 p-4 font-sans text-slate-200">
-      
-      <div className="flex-1 rounded-[32px] overflow-hidden border border-white/5 bg-[#0a0f1e] relative shadow-2xl">
-        <Canvas 
-          shadows={{ type: THREE.PCFShadowMap }} 
-          dpr={[1, 2]}
-          camera={{ position: [0, 0, 12], fov: 50 }}
-          gl={{ antialias: true }}
-        >
+    <div className="relative w-full h-full bg-[#020617] flex gap-1 p-4 overflow-hidden">
+      <div className="flex-1 rounded-[32px] overflow-hidden border border-white/5 bg-[#0a0f1e] relative">
+        {/* 实时 3D 视图 Canvas */}
+        <Canvas shadows={{ type: THREE.PCFShadowMap }} gl={{ preserveDrawingBuffer: true }}>
+          <PerspectiveCamera makeDefault position={[0, 0, 12]} />
+          {/* 对称光照系统修复：使用对称平衡灯光方案 */}
           <ambientLight intensity={0.6} />
-          <directionalLight position={[5, 5, 5]} intensity={1.2} castShadow />
-          <directionalLight position={[-5, 5, -5]} intensity={0.8} />
-          
           <Environment preset="studio" />
-          <ContactShadows position={[0, -6, 0]} opacity={0.4} scale={20} blur={2.5} />
-
           <group ref={sceneRef}>
-            {strokes.map(s => <FiligreeExtrusion key={s.id} points={s.points} thickness={s.thickness} />)}
+            {/* 隐形画板 (用于像素级射线坐标捕获，取代外层遮罩) */}
+            <mesh name="canvas_plate" position={[0, 0, -0.01]} onPointerDown={e => handlePointer(e, 'down')} onPointerMove={e => handlePointer(e, 'move')} onPointerUp={e => handlePointer(e, 'up')}>
+              <planeGeometry args={[10, 10]} />
+              <meshBasicMaterial transparent opacity={0} />
+            </mesh>
+
+            {/* 渲染实体金丝 */}
+            {strokes.map(s => <FiligreeMesh key={s.id} points={s.points} thickness={s.thickness} />)}
             {currentPoints.length > 1 && (
               <>
-                <FiligreeExtrusion points={currentPoints} thickness={wireThickness} />
-                {symmetry && <FiligreeExtrusion points={currentPoints.map(p => ({ x: -p.x, y: p.y, z: p.z }))} thickness={wireThickness} />}
+                <FiligreeMesh points={currentPoints} thickness={wireThickness} />
+                {symmetry && <FiligreeMesh points={currentPoints.map(p => ({ x: -p.x, y: p.y }))} thickness={wireThickness} />}
               </>
             )}
           </group>
 
-          {symmetry && (
-            <mesh position={[0, 0, -0.1]}>
-              <planeGeometry args={[0.02, 10]} />
-              <meshBasicMaterial color="#3b82f6" transparent opacity={0.3} />
-            </mesh>
-          )}
+          {/* 对称辅助线 (导出时不被 sceneRef 包裹) */}
+          {symmetry && <mesh position={[0, 0, -0.1]}><planeGeometry args={[0.02, 10]} /><meshBasicMaterial color="#3b82f6" transparent opacity={0.3} /></mesh>}
 
-          <mesh 
-            position={[0, 0, 0]} 
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-          >
-            <planeGeometry args={[50, 50]} />
-            <meshBasicMaterial transparent opacity={0} />
-          </mesh>
-
-          <OrbitControls ref={orbitalRef} enableDamping minDistance={5} maxDistance={20} />
+          <OrbitControls enableDamping minDistance={5} maxDistance={20} />
         </Canvas>
 
-        <div className="absolute top-6 left-6 z-20 flex items-center gap-3">
-          <div className="px-5 py-2.5 bg-blue-600/10 backdrop-blur-xl border border-blue-500/30 rounded-full flex items-center gap-2">
-            <Zap className="w-4 h-4 text-blue-400 animate-pulse" />
-            <span className="text-[10px] text-blue-400 font-black uppercase tracking-[0.2em]">
-              实时掐丝引擎 v3.1 (Manifold Support)
-            </span>
-          </div>
+        {/* 状态栏 (中文化修复) */}
+        <div className="absolute top-6 left-6 z-20 px-5 py-2.5 bg-blue-600/10 backdrop-blur-xl border border-blue-500/30 rounded-full flex items-center gap-2">
+          <Zap className="w-4 h-4 text-blue-400 animate-pulse" /><span className="text-[10px] text-blue-400 font-black tracking-widest uppercase">实时掐丝珐琅引擎 v3.2</span>
         </div>
 
+        {/* 控制面板 (滑块与导出修复) */}
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 flex items-center gap-4 bg-slate-900/90 backdrop-blur-2xl p-4 rounded-[32px] border border-white/10 shadow-2xl">
-          <button onClick={clearCanvas} className="p-3.5 bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-400 rounded-2xl transition-all active:scale-90">
-            <Trash2 className="w-5 h-5" />
-          </button>
-          
-          <div className="w-[1px] h-8 bg-white/10 mx-1" />
+          <button onClick={() => setStrokes([])} className="p-3.5 bg-white/5 hover:bg-red-500/20 text-slate-400 rounded-2xl"><Trash2 className="w-5 h-5" /></button>
+          <button onClick={() => setSymmetry(!symmetry)} className={`px-6 py-3.5 rounded-2xl text-[10px] font-black tracking-widest border ${symmetry ? 'bg-blue-600 text-white' : 'bg-white/5 text-slate-500'}`}>对称模式</button>
 
-          <button 
-            onClick={() => setSymmetry(!symmetry)}
-            className={`flex items-center gap-3 px-6 py-3.5 rounded-2xl text-[10px] font-black tracking-widest uppercase transition-all ${symmetry ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40' : 'bg-white/5 text-slate-500'}`}
-          >
-            <BoxSelect className="w-4 h-4" />
-            对称模式
-          </button>
-
-          <button 
-            onClick={handleExport}
-            className="flex items-center gap-3 px-8 py-3.5 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-xs tracking-[0.2em] uppercase shadow-lg shadow-blue-900/40 transition-all active:scale-95"
-          >
-            <Download className="w-5 h-5" /> 导出 STL 模型
-          </button>
-        </div>
-      </div>
-      
-      <div className="w-80 bg-[#0a0f1e] rounded-[32px] border border-white/5 p-6 flex flex-col gap-6 shadow-xl">
-        <div className="space-y-1">
-          <h3 className="text-sm font-black text-white/30 uppercase tracking-[0.2em]">工作区</h3>
-          <p className="text-xl font-black text-white italic tracking-tight">掐丝珐琅实验室</p>
-        </div>
-
-        <div className="space-y-6 mt-2">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                <Settings2 className="w-3.5 h-3.5" /> 画笔粗细
-              </div>
-              <span className="text-[10px] font-black text-blue-400 px-2 py-0.5 bg-blue-400/10 rounded-md">
-                {(wireThickness * 20).toFixed(1)}mm
-              </span>
-            </div>
-            <input 
-              type="range" 
-              min="0.01" 
-              max="0.1" 
-              step="0.01" 
-              value={wireThickness}
-              onChange={(e) => setWireThickness(parseFloat(e.target.value))}
-              className="w-full h-1.5 bg-white/5 rounded-full appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 transition-all"
-            />
+          {/* 新增粗细控制滑块 */}
+          <div className="flex flex-col gap-1 w-32 px-2">
+            <label className="text-[10px] text-white/40 font-black tracking-widest">金丝粗细</label>
+            <input type="range" min="0.01" max="0.12" step="0.005" value={wireThickness} onChange={e => setWireThickness(parseFloat(e.target.value))} className="w-full accent-blue-500" />
           </div>
-        </div>
 
-        <div className="flex-1 space-y-4 mt-2">
-          <div className="p-5 bg-white/5 rounded-[24px] border border-white/5 space-y-2.5">
-            <div className="flex items-center gap-2 text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">
-              <MousePointer2 className="w-3.5 h-3.5" /> 绘制提示
-            </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed font-medium">
-              支持导出工业级流形(Manifold)模型，解决切片软件悬空报错。
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-auto pt-6 border-t border-white/5">
-          <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
-            <div className="flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-              <span className="text-white/40">笔画数:</span>
-              <span className="text-white">{strokes.length}</span>
-            </div>
-            <span className="text-white/20">MANIFOLD_MODE</span>
-          </div>
+          <button onClick={handleExport} disabled={isExporting} className={`flex items-center gap-3 px-8 py-3.5 bg-blue-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest ${isExporting ? 'animate-pulse opacity-50' : ''}`}><Layers3 className="w-5 h-5" /> {isExporting ? '处理中...' : '导出打印 STL'}</button>
         </div>
       </div>
 
+      {/* 右侧工作区面板 (中文化修正) */}
+      <div className="w-72 bg-[#0a0f1e] rounded-[32px] border border-white/5 p-6 flex flex-col gap-6 font-sans">
+        <div className="space-y-1"><h3 className="text-xs font-black text-white/40 tracking-widest uppercase">WORKSPACE</h3><p className="text-lg font-black text-white italic">掐丝珐琅实验室</p></div>
+        <div className="p-4 bg-white/5 rounded-2xl border border-white/5 text-xs text-slate-400 leading-relaxed font-medium space-y-2">
+          <p className="font-black text-xs text-blue-400">绘制提示：</p>
+          <p>直接在 3D 视图中拖拽鼠标或触控绘制圆润扁平的金丝轨迹。笔画会自动平滑。</p>
+          <p className="font-black text-xs text-blue-400 mt-2">视角控制：</p>
+          <p>旋转：按住右键/滚轮，平移：双指/Alt+左键，缩放：滚轮。</p>
+        </div>
+        <div className="mt-auto pt-6 border-t border-white/5 flex justify-between text-[10px] font-black text-white/20 tracking-widest italic uppercase"><span>笔画数: {strokes.length}</span><span>P0_FINAL_G2</span></div>
+      </div>
     </div>
   );
 }
