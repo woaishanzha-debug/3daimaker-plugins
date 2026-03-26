@@ -193,8 +193,8 @@ export default function CloisonneEngine({ config }: { config: any }) {
 
           const exporter = new STLExporter();
           const mesh = new THREE.Mesh(geometry);
-          const result = exporter.parse(mesh, { binary: true });
-          const url = URL.createObjectURL(new Blob([result], { type: 'application/octet-stream' }));
+          const result = exporter.parse(mesh, { binary: true }) as unknown as DataView;
+          const url = URL.createObjectURL(new Blob([result.buffer as ArrayBuffer], { type: 'application/octet-stream' }));
           const link = document.createElement('a');
           link.href = url; link.download = 'cloisonne_design.stl'; link.click();
 
