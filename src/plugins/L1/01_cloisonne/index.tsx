@@ -130,13 +130,36 @@ export default function CloisonneEngine({ config }: { config: any }) {
       const ctx = canvas.getContext('2d');
       if (!ctx) { setIsExporting(false); return; }
 
+      // 1. 计算包围盒 (Bounding Box)
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      strokes.forEach(s => {
+        s.points.forEach(p => {
+          minX = Math.min(minX, p.x);
+          maxX = Math.max(maxX, p.x);
+          minY = Math.min(minY, p.y);
+          maxY = Math.max(maxY, p.y);
+        });
+      });
+
+      if (minX === Infinity) { setIsExporting(false); return; }
+
+      // 2. 计算动态缩放与安全边距 (10% Padding)
+      const paddingPercent = 0.1;
+      const W = maxX - minX;
+      const H = maxY - minY;
+      const CX = (minX + maxX) / 2;
+      const CY = (minY + maxY) / 2;
+      const maxDim = Math.max(W, H) || 1;
+      const scaleFactor = (res * (1 - paddingPercent * 2)) / maxDim;
+
       // 白底：让 ImageTracer 可以明确区分"白色背景"和"黑色墨迹"
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, res, res);
 
-      // 坐标映射：Three.js [-5, 5] -> Canvas [0, 2048]
+      // 3. 坐标映射：将 3D 线条按比例居中映射到 Canvas 内部（带 10% 留白）
       ctx.translate(res / 2, res / 2);
-      ctx.scale(res / 10, -res / 10);
+      ctx.scale(scaleFactor, -scaleFactor); // 处理 Y 轴反向
+      ctx.translate(-CX, -CY);
 
       // 画纯黑墨迹
       ctx.strokeStyle = '#000000';
@@ -182,13 +205,12 @@ export default function CloisonneEngine({ config }: { config: any }) {
           // 挤出深度：在原始坐标系中为 0.2 单位
           const geometry = new THREE.ExtrudeGeometry(shapes, { depth: 0.2, bevelEnabled: false });
 
-          // 步骤1：逆向映射 ImageTracer 的像素坐标回 Three.js 坐标系
-          const scaleDown = 10 / res;
-          geometry.scale(scaleDown, -scaleDown, 1);
-          geometry.translate(-5, 5, 0);
+          // 步骤1：逆向映射 ImageTracer 的像素坐标回 Three.js 3D 坐标系
+          geometry.translate(-res / 2, -res / 2, 0); // 坐标归心
+          geometry.scale(1 / scaleFactor, -1 / scaleFactor, 1); // 缩放还原并轴反向
+          geometry.translate(CX, CY, 0); // 回位到原始质心
 
           // 步骤2：物理放大 15 倍 (Three.js 1 单位 = 切片软件 1mm)
-          // 原模型 10mm -> 放大后 150mm，厚度 0.2mm -> 3mm
           geometry.scale(15, 15, 15);
 
           const exporter = new STLExporter();
