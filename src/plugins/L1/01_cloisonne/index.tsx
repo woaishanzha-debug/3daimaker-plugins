@@ -130,9 +130,12 @@ export default function CloisonneEngine({ config }: { config: any }) {
       const ctx = canvas.getContext('2d');
       if (!ctx) { setIsExporting(false); return; }
 
-      // 1. 计算包围盒 (Bounding Box)
+      // 1. 计算包围盒 (Bounding Box)，考虑线条粗细以防止边缘裁切
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      let maxThickness = 0;
+      
       strokes.forEach(s => {
+        maxThickness = Math.max(maxThickness, s.thickness);
         s.points.forEach(p => {
           minX = Math.min(minX, p.x);
           maxX = Math.max(maxX, p.x);
@@ -143,22 +146,30 @@ export default function CloisonneEngine({ config }: { config: any }) {
 
       if (minX === Infinity) { setIsExporting(false); return; }
 
-      // 2. 计算动态缩放与安全边距 (10% Padding)
+      // 引入厚度补偿，确保线条外缘不被切断
+      const buffer = maxThickness / 2;
+      minX -= buffer; maxX += buffer;
+      minY -= buffer; maxY += buffer;
+
+      // 2. 计算动态缩放与安全边距 (强制 10% Padding)
       const paddingPercent = 0.1;
       const W = maxX - minX;
       const H = maxY - minY;
       const CX = (minX + maxX) / 2;
       const CY = (minY + maxY) / 2;
       const maxDim = Math.max(W, H) || 1;
+      
+      // 这里的 1 - paddingPercent * 2 确保了内容只占据中间的 80% 区域，四周各有 10% 留白
       const scaleFactor = (res * (1 - paddingPercent * 2)) / maxDim;
 
-      // 白底：让 ImageTracer 可以明确区分"白色背景"和"黑色墨迹"
+      // 白底：清除画布
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, res, res);
 
-      // 3. 坐标映射：将 3D 线条按比例居中映射到 Canvas 内部（带 10% 留白）
+      // 3. 坐标映射：将 3D 线条居中映射到 Canvas 内部（带 10% 留白）
+      // 这里的顺序至关重要：先定位到画布中心，再缩放并翻转 Y 轴，最后移动到 3D 质心
       ctx.translate(res / 2, res / 2);
-      ctx.scale(scaleFactor, -scaleFactor); // 处理 Y 轴反向
+      ctx.scale(scaleFactor, -scaleFactor); // 处理 Y 轴反向（3D Y向上，Canvas Y向下）
       ctx.translate(-CX, -CY);
 
       // 画纯黑墨迹

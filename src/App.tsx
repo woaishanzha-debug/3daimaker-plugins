@@ -42,6 +42,7 @@ const PLUGIN_MAP: Record<string, React.LazyExoticComponent<React.ComponentType<{
 
 interface PluginConfig {
   lessonId: string;
+  slug?: string; // --- ANTI-HIJACK: Priority Routing ID ---
   studentName?: string;
   theme?: 'dark' | 'light';
   settings?: Record<string, any>;
@@ -58,13 +59,14 @@ const LoadingFallback = () => (
 );
 
 // --- 404 Unknown Route ---
-const UnknownPlugin = ({ lessonId }: { lessonId: string }) => (
+const UnknownPlugin = ({ targetRoute }: { targetRoute: string }) => (
   <div className="min-h-screen bg-[#020617] flex items-center justify-center text-slate-200">
     <div className="text-center space-y-4 p-10 rounded-2xl border border-red-500/20 bg-red-950/20">
       <div className="text-4xl">⚠️</div>
-      <h2 className="text-lg font-bold text-red-400">无效的课程互动载荷</h2>
-      <p className="text-xs text-slate-500 font-mono">lessonId: "{lessonId}"</p>
-      <p className="text-xs text-slate-600">请检查母舰发送的 JSON 配置中的 lessonId 字段。</p>
+      <h2 className="text-lg font-bold text-red-400">无效的课程互动载荷 (Route: {targetRoute})</h2>
+      <p className="text-xs text-slate-500 font-mono">Payload mismatch detected at Stargate Dispatcher.</p>
+      <p className="text-xs text-slate-600 font-mono">Target: "{targetRoute}"</p>
+      <p className="text-xs text-slate-700">请检查母舰发送的 JSON 配置中的 slug 或 lessonId 字段。</p>
     </div>
   </div>
 );
@@ -75,8 +77,13 @@ function App() {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data && event.data.type === 'INIT_PLUGIN') {
-        console.log('[Stargate] Plugin initialized:', event.data.config);
-        setConfig(event.data.config);
+        const payload = event.data.config;
+        const targetRoute = payload?.slug || payload?.lessonId;
+        
+        // --- High-visibility Debugging ---
+        console.log("🚀 [Stargate Dispatcher] 路由解析:", targetRoute, "完整配置:", payload);
+        
+        setConfig(payload);
       }
     };
 
@@ -101,10 +108,12 @@ function App() {
   }
 
   // --- Route Dispatch ---
-  const PluginComponent = PLUGIN_MAP[config.lessonId];
+  // --- ANTI-HIJACK: Prioritize 'slug' over hijacked 'lessonId' ---
+  const targetRoute = config.slug || config.lessonId;
+  const PluginComponent = PLUGIN_MAP[targetRoute];
 
   if (!PluginComponent) {
-    return <UnknownPlugin lessonId={config.lessonId} />;
+    return <UnknownPlugin targetRoute={targetRoute} />;
   }
 
   return (
