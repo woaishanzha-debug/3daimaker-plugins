@@ -7,13 +7,16 @@ const L1_02 = lazy(() => import('./plugins/L1/02_cloisonne_intro/index'));
 const L1_03 = lazy(() => import('./plugins/L1/03_lantern/index'));
 const L1_04 = lazy(() => import('./plugins/L1/04_song_brocade/index'));
 const L1_05 = lazy(() => import('./plugins/L1/05_shadow_play/index'));
-const L1_06 = lazy(() => import('./plugins/L1/06_blue_white_porcelain/index'));
+const ShadowPlay = lazy(() => import('./plugins/L1/06_shadow_play/index'));
+const BlueWhitePorcelain = lazy(() => import('./plugins/L1/06_blue_white_porcelain/index'));
 const L1_07 = lazy(() => import('./plugins/L1/07_tiger_tally/index'));
 const L1_08 = lazy(() => import('./plugins/L1/08_tang_sancai/index'));
 const L1_09 = lazy(() => import('./plugins/L1/09_terracotta_warriors/index'));
 const L1_10 = lazy(() => import('./plugins/L1/10_calligraphy/index'));
+const Calligraphy = L1_10;
 const L1_11 = lazy(() => import('./plugins/L1/11_embroidery/index'));
 const L1_12 = lazy(() => import('./plugins/L1/12_paper_cut/index'));
+const PaperCut = L1_12;
 const L1_13 = lazy(() => import('./plugins/L1/13_qinqiang_mask/index'));
 const L1_14 = lazy(() => import('./plugins/L1/14_mashao_mask/index'));
 const L1_15 = lazy(() => import('./plugins/L1/15_raden/index'));
@@ -27,7 +30,8 @@ const PLUGIN_MAP: Record<string, React.LazyExoticComponent<React.ComponentType<{
   'l1_03_lantern': L1_03,
   'l1_04_song_brocade': L1_04,
   'l1_05_shadow_play': L1_05,
-  'l1_06_blue_white_porcelain': L1_06,
+  'l1_06_shadow_play': ShadowPlay,
+  'l1_06_blue_white_porcelain': BlueWhitePorcelain,
   'l1_07_tiger_tally': L1_07,
   'l1_08_tang_sancai': L1_08,
   'l1_09_terracotta_warriors': L1_09,
@@ -119,7 +123,28 @@ function App() {
   return (
     <div className="w-full h-screen overflow-hidden">
       <Suspense fallback={<LoadingFallback />}>
-        <PluginComponent config={config} />
+        {/* Explicit Route Override for V2 Legacy Migration Verification */}
+        {targetRoute === 'l1_02_cloisonne_intro' ? (
+          <L1_02 config={config} />
+        ) : targetRoute === 'l1_03_lantern' ? (
+          <L1_03 config={config} />
+        ) : targetRoute === 'l1_04_song_brocade' ? (
+          <L1_04 config={config} />
+        ) : targetRoute === 'l1_06_shadow_play' ? (
+          <ShadowPlay config={config} />
+        ) : targetRoute === 'l1_06_blue_white_porcelain' ? (
+          <BlueWhitePorcelain config={config} />
+        ) : targetRoute === 'l1_07_tiger_tally' ? (
+          <L1_07 config={config} />
+        ) : targetRoute === 'l1_09_terracotta_warriors' ? (
+          <L1_09 config={config} />
+        ) : targetRoute === 'l1_10_calligraphy' ? (
+          <Calligraphy config={config} />
+        ) : targetRoute === 'l1_12_paper_cut' ? (
+          <PaperCut config={config} />
+        ) : (
+          <PluginComponent config={config} />
+        )}
       </Suspense>
     </div>
   );
