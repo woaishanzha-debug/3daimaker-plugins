@@ -37,7 +37,7 @@ const squareDashedHinge = createDashedHingeGeo(FACE_SIZE);
 // 14面体拓扑
 const NET_14 = {
     id: 's0', type: 'square', edge: 0, fa: A14, children: [
-        { id: 't1', type: 'triangle', edge: 0, fa: A14, children: [ { id: 's1', type: 'square', edge: 1, fa: A14, children: [ { id: 't5', type: 'triangle', edge: 0, fa: A14, children: [ { id: 's5', type: 'square', edge: 1, fa: A14, children: [] } ]} ]} ]},
+        { id: 't1', type: 'triangle', edge: 0, fa: A14, children: [ { id: 's1', type: 'square', edge: 1, fa: A14, children: [ { id: 't5', type: 'triangle', edge: 0, fa: A14, children: [ { id: 's5', type: 'square', edge: 2, fa: A14, children: [] } ]} ]} ]},
         { id: 't2', type: 'triangle', edge: 1, fa: A14, children: [ { id: 's2', type: 'square', edge: 1, fa: A14, children: [ { id: 't6', type: 'triangle', edge: 0, fa: A14, children: [] } ]} ]},
         { id: 't3', type: 'triangle', edge: 2, fa: A14, children: [ { id: 's3', type: 'square', edge: 1, fa: A14, children: [ { id: 't7', type: 'triangle', edge: 0, fa: A14, children: [] } ]} ]},
         { id: 't4', type: 'triangle', edge: 3, fa: A14, children: [ { id: 's4', type: 'square', edge: 1, fa: A14, children: [ { id: 't8', type: 'triangle', edge: 0, fa: A14, children: [] } ]} ]}
