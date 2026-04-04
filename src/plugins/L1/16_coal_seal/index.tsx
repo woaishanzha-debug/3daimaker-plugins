@@ -1,8 +1,9 @@
-import React, { useState, useRef, useMemo, useCallback } from 'react';
-import { Canvas as ThreeCanvas, useFrame } from '@react-three/fiber';
+import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import { Canvas as ThreeCanvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, Center, Edges } from '@react-three/drei';
 import { Hand, Pencil, Eraser, Download, Box, Layers2, Shapes, Trash2 } from 'lucide-react';
 import * as THREE from 'three';
+import { exportTo3MF } from 'three-3mf-exporter';
 
 // === 1. 物理常数与拓扑数据 ===
 const FACE_SIZE = 30; 
@@ -44,22 +45,79 @@ const NET_14 = {
     ]
 };
 
-// 26面体拓扑 (菱方八面体)
+// 26面体拓扑 (小斜方截半立方体) - 绝对无碰撞的“蜈蚣阵列”展开树
 const NET_26 = {
     id: 's0', type: 'square', edge: 0, fa: A26_SS, children: [
-        { id: 's1', type: 'square', edge: 0, fa: A26_SS, children: [
-            { id: 't1', type: 'triangle', edge: 1, fa: A26_ST, children: [ { id: 's13', type: 'square', edge: 1, fa: A26_ST, children: [ { id: 't5', type: 'triangle', edge: 0, fa: A26_ST, children: []} ] } ] },
-            { id: 't2', type: 'triangle', edge: 3, fa: A26_ST, children: [ { id: 's14', type: 'square', edge: 1, fa: A26_ST, children: [ { id: 't6', type: 'triangle', edge: 0, fa: A26_ST, children: []} ] } ] },
-            { id: 's5', type: 'square', edge: 0, fa: A26_SS, children: [ { id: 's9', type: 'square', edge: 0, fa: A26_SS, children: [] } ]}
+        // S0 上下分支 (顶部与底部盖板)
+        { id: 's8', type: 'square', edge: 0, fa: A26_SS, children: [
+            { id: 's16', type: 'square', edge: 0, fa: A26_SS, children: [] }
         ]},
-        { id: 's2', type: 'square', edge: 1, fa: A26_SS, children: [ { id: 's6', type: 'square', edge: 0, fa: A26_SS, children: [ { id: 's10', type: 'square', edge: 0, fa: A26_SS, children: [] } ]} ]},
-        { id: 's3', type: 'square', edge: 2, fa: A26_SS, children: [
-            { id: 't3', type: 'triangle', edge: 1, fa: A26_ST, children: [ { id: 's15', type: 'square', edge: 1, fa: A26_ST, children: [ { id: 't7', type: 'triangle', edge: 0, fa: A26_ST, children: []} ] } ] },
-            { id: 't4', type: 'triangle', edge: 3, fa: A26_ST, children: [ { id: 's16', type: 'square', edge: 1, fa: A26_ST, children: [ { id: 't8', type: 'triangle', edge: 0, fa: A26_ST, children: []} ] } ] },
-            { id: 's7', type: 'square', edge: 0, fa: A26_SS, children: [ { id: 's11', type: 'square', edge: 0, fa: A26_SS, children: [] } ]}
+        { id: 's9', type: 'square', edge: 2, fa: A26_SS, children: [
+            { id: 's17', type: 'square', edge: 0, fa: A26_SS, children: [] }
         ]},
-        { id: 's4', type: 'square', edge: 3, fa: A26_SS, children: [ { id: 's8', type: 'square', edge: 0, fa: A26_SS, children: [ { id: 's12', type: 'square', edge: 0, fa: A26_SS, children: [ { id: 's17', type: 'square', edge: 0, fa: A26_SS, children: [] } ]} ]} ]}
+        // S0 脊椎向右延伸 -> S1
+        { id: 's1', type: 'square', edge: 1, fa: A26_SS, children: [
+            // S1 上下步足 (三角形)
+            { id: 't0', type: 'triangle', edge: 3, fa: A26_ST, children: [] },
+            { id: 't1', type: 'triangle', edge: 1, fa: A26_ST, children: [] },
+            // S1 脊椎延伸 -> S2
+            { id: 's2', type: 'square', edge: 0, fa: A26_SS, children: [
+                // S2 上下步足 (正方形)
+                { id: 's10', type: 'square', edge: 3, fa: A26_SS, children: [] },
+                { id: 's11', type: 'square', edge: 1, fa: A26_SS, children: [] },
+                // S2 脊椎延伸 -> S3
+                { id: 's3', type: 'square', edge: 0, fa: A26_SS, children: [
+                    // S3 上下步足 (三角形)
+                    { id: 't2', type: 'triangle', edge: 3, fa: A26_ST, children: [] },
+                    { id: 't3', type: 'triangle', edge: 1, fa: A26_ST, children: [] },
+                    // S3 脊椎延伸 -> S4
+                    { id: 's4', type: 'square', edge: 0, fa: A26_SS, children: [
+                        // S4 上下步足 (正方形)
+                        { id: 's12', type: 'square', edge: 3, fa: A26_SS, children: [] },
+                        { id: 's13', type: 'square', edge: 1, fa: A26_SS, children: [] },
+                        // S4 脊椎延伸 -> S5
+                        { id: 's5', type: 'square', edge: 0, fa: A26_SS, children: [
+                            // S5 上下步足 (三角形)
+                            { id: 't4', type: 'triangle', edge: 3, fa: A26_ST, children: [] },
+                            { id: 't5', type: 'triangle', edge: 1, fa: A26_ST, children: [] },
+                            // S5 脊椎延伸 -> S6
+                            { id: 's6', type: 'square', edge: 0, fa: A26_SS, children: [
+                                // S6 上下步足 (正方形)
+                                { id: 's14', type: 'square', edge: 3, fa: A26_SS, children: [] },
+                                { id: 's15', type: 'square', edge: 1, fa: A26_SS, children: [] },
+                                // S6 脊椎延伸 -> S7 (赤道脊椎末端)
+                                { id: 's7', type: 'square', edge: 0, fa: A26_SS, children: [
+                                    // S7 上下步足 (三角形)
+                                    { id: 't6', type: 'triangle', edge: 3, fa: A26_ST, children: [] },
+                                    { id: 't7', type: 'triangle', edge: 1, fa: A26_ST, children: [] }
+                                ]}
+                            ]}
+                        ]}
+                    ]}
+                ]}
+            ]}
+        ]}
     ]
+};
+
+// === 视角复位通讯兵 ===
+const CameraResetter = ({ tick }: { tick: number }) => {
+    const { camera, controls } = useThree();
+    
+    useEffect(() => {
+        if (tick > 0) {
+            // 强行将摄像机拉回 Z=320 的默认全景高位
+            camera.position.set(0, 0, 320);
+            camera.lookAt(0, 0, 0);
+            // 重置轨道控制器的焦点中心
+            if (controls) {
+                (controls as any).target.set(0, 0, 0);
+                (controls as any).update();
+            }
+        }
+    }, [tick, camera, controls]);
+    
+    return null;
 };
 
 // === 2. 3D 实体画笔部件 ===
@@ -196,10 +254,25 @@ const CoalSealSystem = ({ activeTopology, viewMode, activeTool, activeColor, str
     const lastPoint = useRef<{ faceId: string, pt: THREE.Vector3 } | null>(null);
     const activeLayout = activeTopology === 'NET_14' ? ABS_14 : ABS_26;
 
+    // 核心修正：释放 26 面体的画布占比，将其往上提并放大
+    // 0.85 的缩放比在 Z=320 的视锥体内刚好留下舒适的边缘留白
+    const visualScale = activeTopology === 'NET_26' ? 0.85 : 1; 
+    
+    const visualRotation = useMemo(() => {
+        if (activeTopology === 'NET_26' && viewMode === 'paint') return new THREE.Euler(0, 0, -Math.PI / 2); 
+        return new THREE.Euler(0, 0, 0);
+    }, [activeTopology, viewMode]);
+
+    const visualPosition = useMemo(() => {
+        // 第一性原理补偿：阵列物理长度为 240，缩放 0.85 后为 204。
+        // 旋转后它向下生长，导致中心偏移了 -102。我们将它沿着 Y 轴上提 100 视觉单位，完美居中！
+        if (activeTopology === 'NET_26' && viewMode === 'paint') return new THREE.Vector3(0, 100, 0);
+        return new THREE.Vector3(0, 0, 0);
+    }, [activeTopology, viewMode]);
+
     const getHitContext = (e: any) => {
         const hit = e.intersections.find((i: any) => i.object.userData.isPaper);
         if (!hit) return null;
-        // The parent group holds the faceId and correct local matrix
         const group = hit.object.parent;
         const faceId = group.userData.faceId;
         const localPt = group.worldToLocal(hit.point.clone());
@@ -212,22 +285,44 @@ const CoalSealSystem = ({ activeTopology, viewMode, activeTool, activeColor, str
         const ctx = getHitContext(e);
         if (!ctx) return;
 
-        isDrawing.current = true;
         e.stopPropagation();
 
+        // 核心修正 2：真·物理橡皮擦。遍历触碰面上的所有线段，如果鼠标落点与线段内任意点距离小于 16 (半径4mm)，则彻底从内存中抹除整条线
+        if (activeTool === 'eraser') {
+            setStrokes((prev: any) => prev.filter((s: any) => {
+                if (s.faceId !== ctx.faceId) return true;
+                return !s.points.some((p: THREE.Vector3) => p.distanceToSquared(ctx.pt) < 16); 
+            }));
+            return; // 擦除模式下不记录绘图起点
+        }
+
+        isDrawing.current = true;
         lastPoint.current = ctx;
-        setStrokes((prev: any) => [...prev, { id: Date.now(), faceId: ctx.faceId, color: activeTool === 'eraser' ? '#ffffff' : activeColor, points: [ctx.pt] }]);
+        setStrokes((prev: any) => [...prev, { id: Date.now(), faceId: ctx.faceId, color: activeColor, points: [ctx.pt] }]);
     }, [activeTool, viewMode, activeColor]);
 
     const onPointerMove = useCallback((e: any) => {
-        if (!isDrawing.current || activeTool === 'drag' || viewMode !== 'paint') return;
+        if (activeTool === 'drag' || viewMode !== 'paint') return;
         const ctx = getHitContext(e);
         if (!ctx) { lastPoint.current = null; return; }
 
         e.stopPropagation();
 
+        // 擦除模式：按住鼠标滑动时，所到之处的线段被连续物理销毁
+        if (activeTool === 'eraser') {
+            if (e.buttons === 1) { // 必须是左键按下的滑动才触发擦除
+                setStrokes((prev: any) => prev.filter((s: any) => {
+                    if (s.faceId !== ctx.faceId) return true;
+                    return !s.points.some((p: THREE.Vector3) => p.distanceToSquared(ctx.pt) < 16);
+                }));
+            }
+            return;
+        }
+
+        if (!isDrawing.current) return;
+
         if (lastPoint.current && lastPoint.current.faceId !== ctx.faceId) {
-            setStrokes((prev: any) => [...prev, { id: Date.now(), faceId: ctx.faceId, color: activeTool === 'eraser' ? '#ffffff' : activeColor, points: [ctx.pt] }]);
+            setStrokes((prev: any) => [...prev, { id: Date.now(), faceId: ctx.faceId, color: activeColor, points: [ctx.pt] }]);
         } else {
             setStrokes((prev: any) => {
                 const newStrokes = [...prev];
@@ -249,6 +344,9 @@ const CoalSealSystem = ({ activeTopology, viewMode, activeTool, activeColor, str
 
     return (
         <group 
+            scale={visualScale}
+            rotation={visualRotation}
+            position={visualPosition}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
@@ -269,6 +367,91 @@ export default function CoalSealPlugin() {
     
     // 全量画笔记录：[ { id, faceId, color, points[] } ]
     const [strokes, setStrokes] = useState<any[]>([]);
+    const [isExporting, setIsExporting] = useState(false);
+    // 新增：视角重置触发器
+    const [resetTick, setResetTick] = useState(0); 
+
+    // === 工业级 3MF 物理切片与活动铰链构建引擎 ===
+    const handleExport3MF = async () => {
+        setIsExporting(true);
+        // 短暂让出主线程，更新 UI 状态
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        try {
+            const exportGroup = new THREE.Group();
+            const activeLayout = activeTopology === 'NET_14' ? ABS_14 : ABS_26;
+            
+            // 煤精基础黑色材质
+            const coalMat = new THREE.MeshStandardMaterial({ color: '#1a1a1a', roughness: 0.8 });
+            const colorMats: Record<string, THREE.MeshStandardMaterial> = {};
+
+            activeLayout.forEach(faceDef => {
+                const faceGroup = new THREE.Group();
+                // 绝对映射：将零件放到平铺 2D 坐标系的准确位置
+                faceGroup.applyMatrix4(faceDef.flatMatrix);
+
+                const isSquare = faceDef.type === 'square';
+                const shape = isSquare ? squareShape : triangleShape;
+                // 计算几何中心，用于后续的缩放收缩
+                const centerY = isSquare ? FACE_SIZE / 2 : TRI_H / 3;
+
+                // --- 物理层 1：0.2mm 柔性连接铰链 (100% 尺寸，严丝合缝) ---
+                const hingeGeo = new THREE.ExtrudeGeometry(shape, { depth: 0.2, bevelEnabled: false });
+                const hingeMesh = new THREE.Mesh(hingeGeo, coalMat);
+                faceGroup.add(hingeMesh);
+
+                // --- 物理层 2：0.4mm 实体面片 (向内收缩，边缘留出 V 型折叠槽) ---
+                const thickGeo = new THREE.ExtrudeGeometry(shape, { depth: 0.4, bevelEnabled: false });
+                const thickMesh = new THREE.Mesh(thickGeo, coalMat);
+                thickMesh.position.z = 0.2; // 叠在铰链层上方
+                
+                // 第一性捷径：将原点移至几何中心 -> 缩小 4% -> 移回原点，天然形成边缘折叠槽
+                thickMesh.position.y = centerY; 
+                thickMesh.scale.set(0.96, 0.96, 1); 
+                thickMesh.position.y -= centerY * 0.96; 
+                faceGroup.add(thickMesh);
+
+                // --- 物理层 3：彩色画笔实体 (吸附并嵌入面片，解决空层警告) ---
+                const faceStrokes = strokes.filter(s => s.faceId === faceDef.id);
+                faceStrokes.forEach(stroke => {
+                    // 核心修复 1：将 UI 录入时的 Z 轴高度“拍扁”归零，消除叠加误差
+                    let flatPoints = stroke.points.map((p: any) => new THREE.Vector3(p.x, p.y, 0));
+                    
+                    if (flatPoints.length === 1) {
+                        flatPoints = [flatPoints[0], flatPoints[0].clone().add(new THREE.Vector3(0, 0.001, 0))];
+                    }
+                    
+                    if (flatPoints.length >= 2) {
+                        const curve = new THREE.CatmullRomCurve3(flatPoints, false, 'centripetal', 0.5);
+                        // 设置笔刷半径为 0.4mm (整体宽度 0.8mm)
+                        const tubeGeo = new THREE.TubeGeometry(curve, Math.max(10, flatPoints.length * 2), 0.4, 8, false);
+                        
+                        if (!colorMats[stroke.color]) colorMats[stroke.color] = new THREE.MeshStandardMaterial({ color: stroke.color });
+                        const strokeMesh = new THREE.Mesh(tubeGeo, colorMats[stroke.color]);
+                        
+                        // 核心修复 2：实体表面在 Z=0.6 结束。我们将画笔的中心设 in Z=0.6。
+                        // 这样下半管(0.2~0.6)深深扎根进底板确保切片融合，上半管(0.6~1.0)凸出表面 0.4mm 形成完美的彩色阳文。
+                        strokeMesh.position.z = 0.6;
+                        faceGroup.add(strokeMesh);
+                    }
+                });
+
+                exportGroup.add(faceGroup);
+            });
+
+            // FDM 切片机天然是 Z 轴向上，而平铺网格正好躺在 XY 平面上 (Z 为厚度)
+            const blob = await exportTo3MF(exportGroup, { printer_name: 'Bambu Lab' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `Coal_Seal_${activeTopology}_${Date.now()}.3mf`;
+            link.click();
+
+        } catch (error) {
+            console.error('3MF 导出失败:', error);
+        } finally {
+            setIsExporting(false);
+        }
+    };
 
     const cursorClassName = useMemo(() => {
         if (activeTool === 'drag') return 'cursor-grab';
@@ -289,8 +472,8 @@ export default function CoalSealPlugin() {
                     <div className="space-y-3">
                         <label className="text-xs font-bold text-white/50 tracking-widest">拓扑底板结构</label>
                         <div className="grid grid-cols-2 gap-2">
-                            <button onClick={() => { setActiveTopology('NET_14'); setStrokes([]); }} className={`py-4 rounded-xl text-xs font-black tracking-widest uppercase border transition-all ${activeTopology === 'NET_14' ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'border-white/5 text-white/30'}`}><Shapes className="w-4 h-4 mx-auto mb-2 opacity-50" /> 14面体</button>
-                            <button onClick={() => { setActiveTopology('NET_26'); setStrokes([]); }} className={`py-4 rounded-xl text-xs font-black tracking-widest uppercase border transition-all ${activeTopology === 'NET_26' ? 'bg-purple-600/20 border-purple-500 text-purple-400' : 'border-white/5 text-white/30'}`}><Shapes className="w-4 h-4 mx-auto mb-2 opacity-50" /> 26面体</button>
+                            <button onClick={() => { setActiveTopology('NET_14'); setStrokes([]); setResetTick(t => t + 1); }} className={`py-4 rounded-xl text-xs font-black tracking-widest uppercase border transition-all ${activeTopology === 'NET_14' ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'border-white/5 text-white/30'}`}><Shapes className="w-4 h-4 mx-auto mb-2 opacity-50" /> 14面体</button>
+                            <button onClick={() => { setActiveTopology('NET_26'); setStrokes([]); setResetTick(t => t + 1); }} className={`py-4 rounded-xl text-xs font-black tracking-widest uppercase border transition-all ${activeTopology === 'NET_26' ? 'bg-purple-600/20 border-purple-500 text-purple-400' : 'border-white/5 text-white/30'}`}><Shapes className="w-4 h-4 mx-auto mb-2 opacity-50" /> 26面体</button>
                         </div>
                     </div>
 
@@ -320,7 +503,7 @@ export default function CoalSealPlugin() {
                     </div>
 
                     <div className="flex gap-2 pt-4 border-t border-white/10">
-                        <button onClick={() => setStrokes([])} className="flex-1 py-4 rounded-xl bg-white/5 text-[10px] font-black tracking-widest uppercase text-white/40 hover:text-red-400 hover:border-red-500/50 border border-transparent transition-all">
+                        <button onClick={() => { setStrokes([]); setResetTick(t => t + 1); }} className="flex-1 py-4 rounded-xl bg-white/5 text-[10px] font-black tracking-widest uppercase text-white/40 hover:text-red-400 hover:border-red-500/50 border border-transparent transition-all">
                             <Trash2 className="w-4 h-4 mx-auto mb-1" /> 清理印面
                         </button>
                     </div>
@@ -328,14 +511,19 @@ export default function CoalSealPlugin() {
                 </div>
 
                 <div className="p-6">
-                    <button className="w-full py-4 rounded bg-neutral-800 font-bold text-sm flex justify-center items-center gap-2 text-white/50 cursor-not-allowed">
-                        <Download className="w-4 h-4" /> 导出 3MF 物理切片 (TODO)
+                    <button 
+                        onClick={handleExport3MF}
+                        disabled={isExporting}
+                        className="w-full py-4 rounded bg-amber-700 hover:bg-amber-600 transition-colors font-bold text-sm flex justify-center items-center gap-2 text-white disabled:opacity-50"
+                    >
+                        <Download className="w-4 h-4" /> 
+                        {isExporting ? '生成物理切片中...' : '导出 3MF 物理切片'}
                     </button>
                 </div>
             </div>
 
             <div className={`flex-1 relative bg-[#f8f9fa] ${cursorClassName}`}>
-                <ThreeCanvas camera={{ position: [0, 0, 260], fov: 45 }}>
+                <ThreeCanvas camera={{ position: [0, 0, 320], fov: 45 }}>
                     <color attach="background" args={['#f8f9fa']} />
                     <ambientLight intensity={0.9} />
                     <directionalLight position={[50, 100, 100]} intensity={1.5} />
@@ -350,6 +538,9 @@ export default function CoalSealPlugin() {
                             RIGHT: THREE.MOUSE.ROTATE
                         }}
                     />
+                    
+                    {/* 挂载视角复位器 */}
+                    <CameraResetter tick={resetTick} />
                     
                     <Center>
                         <CoalSealSystem activeTopology={activeTopology} viewMode={viewMode} activeTool={activeTool} activeColor={activeColor} strokes={strokes} setStrokes={setStrokes} />

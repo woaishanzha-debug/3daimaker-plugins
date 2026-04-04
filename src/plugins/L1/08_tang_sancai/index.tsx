@@ -174,7 +174,7 @@ export default function TangSancaiPlugin() {
         reader.readAsArrayBuffer(file);
     };
 
-    // 工业级全彩 3MF 导出 (基于顶点色的网格重组算法)
+    // === 终极物理学：唐三彩 3MF 釉面实体挤出引擎 ===
     const handleExport = async () => {
         if (!geometry) return;
         setIsExporting(true);
@@ -184,68 +184,101 @@ export default function TangSancaiPlugin() {
 
         try {
             const positions = geometry.attributes.position;
-            const normals = geometry.attributes.normal;
             const colors = geometry.attributes.color;
 
-            // 1. 初始化色彩缓存池
-            const colorBuffers: Record<string, { pos: number[], norm: number[] }> = {};
-            GLAZE_COLORS.forEach(c => colorBuffers[c] = { pos: [], norm: [] });
+            // 1. 初始化釉色实体缓存池
+            const colorBuffers: Record<string, number[]> = {};
+            GLAZE_COLORS.forEach(c => colorBuffers[c] = []);
 
-            // 2. 遍历所有面片 (非索引几何体每 3 个顶点为一个三角形)
+            const v0 = new THREE.Vector3();
+            const v1 = new THREE.Vector3();
+            const v2 = new THREE.Vector3();
+
+            // 物理制造参数：唐三彩的釉层较薄，向外凸起 0.4mm 形成釉面，向内嵌入 0.4mm 咬合胎体
+            const extOut = 0.4;
+            const extIn = -0.4;
+
+            // 2. 遍历所有面片
             for (let i = 0; i < positions.count; i += 3) {
-                // 采样该三角形第一个顶点的颜色作为主色
+                // 采样该三角形第一个顶点的颜色
                 const r = colors.getX(i);
                 const g = colors.getY(i);
                 const b = colors.getZ(i);
 
-                // 强制收敛到标准釉色池
+                // 核心判断：如果是纯白素胎 (1,1,1)，表示未上釉，跳过挤出，直接露出底座
+                if (r === 1 && g === 1 && b === 1) continue;
+
                 const matchedHex = getNearestPaletteColor(r, g, b, GLAZE_COLORS);
 
-                // 将该三角形的 3 个顶点推入对应的色彩缓存池
-                for(let j = 0; j < 3; j++) {
-                    const idx = i + j;
-                    colorBuffers[matchedHex].pos.push(positions.getX(idx), positions.getY(idx), positions.getZ(idx));
-                    if (normals) {
-                        colorBuffers[matchedHex].norm.push(normals.getX(idx), normals.getY(idx), normals.getZ(idx));
-                    }
-                }
+                v0.fromBufferAttribute(positions, i);
+                v1.fromBufferAttribute(positions, i+1);
+                v2.fromBufferAttribute(positions, i+2);
+
+                // 计算真实面法线
+                const cb = new THREE.Vector3().subVectors(v2, v1);
+                const ab = new THREE.Vector3().subVectors(v0, v1);
+                const normal = new THREE.Vector3().crossVectors(cb, ab);
+                if (normal.lengthSq() < 0.000001) continue; 
+                normal.normalize();
+
+                const offsetTop = normal.clone().multiplyScalar(extOut);
+                const offsetBot = normal.clone().multiplyScalar(extIn);
+
+                const v0t = v0.clone().add(offsetTop);
+                const v1t = v1.clone().add(offsetTop);
+                const v2t = v2.clone().add(offsetTop);
+                
+                const v0b = v0.clone().add(offsetBot);
+                const v1b = v1.clone().add(offsetBot);
+                const v2b = v2.clone().add(offsetBot);
+
+                const pushTri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) => {
+                    colorBuffers[matchedHex].push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+                };
+
+                // 将单薄的面片膨胀为 8 个面构成的绝对闭合三棱柱
+                pushTri(v0t, v1t, v2t); // 顶面
+                pushTri(v0b, v2b, v1b); // 底面
+                pushTri(v0t, v0b, v1b); pushTri(v0t, v1b, v1t); // 侧围 1
+                pushTri(v1t, v1b, v2b); pushTri(v1t, v2b, v2t); // 侧围 2
+                pushTri(v2t, v2b, v0b); pushTri(v2t, v0b, v0t); // 侧围 3
             }
 
-            // 3. 重组独立的 3D 实体零件
             const printGroup = new THREE.Group();
-            
-            for (const hex of Object.keys(colorBuffers)) {
-                if (colorBuffers[hex].pos.length === 0) continue; // 跳过没用到的颜色
+
+            // 3. 素胎护航：将原素模作为纯白/米黄色的素胎底座打底
+            const baseMat = new THREE.MeshStandardMaterial({ color: '#f5f5f4', roughness: 0.9 });
+            const baseMesh = new THREE.Mesh(geometry, baseMat);
+            printGroup.add(baseMesh);
+
+            // 4. 实体拼装：将挤出的釉色积木挂载
+            for (const hex of GLAZE_COLORS) {
+                const posArray = colorBuffers[hex];
+                if (posArray.length === 0) continue;
 
                 const partGeom = new THREE.BufferGeometry();
-                partGeom.setAttribute('position', new THREE.Float32BufferAttribute(colorBuffers[hex].pos, 3));
-                if (colorBuffers[hex].norm.length > 0) {
-                    partGeom.setAttribute('normal', new THREE.Float32BufferAttribute(colorBuffers[hex].norm, 3));
-                } else {
-                    partGeom.computeVertexNormals();
-                }
+                partGeom.setAttribute('position', new THREE.Float32BufferAttribute(posArray, 3));
+                partGeom.computeVertexNormals();
 
-                // 赋予纯正的材质颜色，完美适配 3MF
-                const partMat = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.1 });
+                const partMat = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.1 }); // 保持高光泽度
                 const partMesh = new THREE.Mesh(partGeom, partMat);
                 printGroup.add(partMesh);
             }
 
-            // 4. 坐标系解耦与工业封包
-            // 恢复真实的 1:1 物理比例，并将 Web 端的 Y-up 翻转回 3D 打印机的 Z-up
+            // 5. 坐标系解耦与工业封包 (恢复 Z-up)
             printGroup.rotation.x = Math.PI / 2;
             printGroup.scale.set(1, 1, 1);
             printGroup.updateMatrixWorld(true);
 
-            const blob = await exportTo3MF(printGroup, { printer_name: 'Bambu Lab' });
+            const blob = await exportTo3MF(printGroup, { printer_name: 'Bambu Lab AMS' });
             
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.download = `Tang_Sancai_Glaze_${Date.now()}.3mf`;
+            link.download = `Tang_Sancai_Solid_${Date.now()}.3mf`;
             link.click();
 
         } catch (error) {
-            console.error('网格重组 3MF 导出失败:', error);
+            console.error('实体挤出 3MF 导出失败:', error);
         } finally {
             setIsExporting(false);
         }
@@ -313,7 +346,7 @@ export default function TangSancaiPlugin() {
 
                             <button onClick={handleExport} disabled={isExporting} className="w-full py-5 rounded-xl bg-gradient-to-r from-amber-700 to-amber-800 hover:from-amber-600 hover:to-amber-700 font-black text-xs uppercase tracking-[2px] flex justify-center items-center gap-3 transition-all disabled:opacity-50 mt-auto shadow-xl ring-1 ring-white/10 active:scale-95">
                                 <Download className="w-4 h-4" /> 
-                                {isExporting ? '窑炉高温封包中...' : '出窑：导出全彩 3MF'}
+                                {isExporting ? '3D 实体挤出成瓷中...' : '出窑：导出 3MF 实体镶嵌模型'}
                             </button>
                         </>
                     )}
