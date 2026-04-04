@@ -15,13 +15,17 @@ const CULTURE_MATRIX = [
     { id: 'gold', name: '神魔仙怪', color: '#FFD700', desc: '天眼拉伸，极高金属反光' }
 ];
 
-// 核心修复：去除开头的 /，确保在 GitHub Pages 子目录下能正确寻址
-const LOCAL_MODEL_PATH = 'models/FaceCap.glb';
+// 核心修复：对齐母舰框架，使用绝对路径由 Vite 解析
+const FACECAP_URL = '/models/FaceCap.glb';
+
+// 强制同步：注入 Meshopt 解码器到全局加载器
+// @ts-ignore
+useGLTF.setMeshoptDecoder(MeshoptDecoder);
 
 // === 强悍的 ARKit 面部肌肉映射引擎 ===
 const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
-    // 强制指定本地路径，并注入 MeshoptDecoder 解决压缩报错
-    const gltf = useGLTF(LOCAL_MODEL_PATH, true, true, (loader) => {
+    // 强制指定物理对齐路径，并注入 MeshoptDecoder 解决压缩报错
+    const gltf = useGLTF(FACECAP_URL, true, true, (loader) => {
         loader.setMeshoptDecoder(MeshoptDecoder);
     });
 
@@ -103,7 +107,7 @@ const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
 };
 
 // 预加载本地资产，并注入 MeshoptDecoder 解决解压报错
-useGLTF.preload(LOCAL_MODEL_PATH, true, true, (loader) => {
+useGLTF.preload(FACECAP_URL, true, true, (loader) => {
     loader.setMeshoptDecoder(MeshoptDecoder);
 });
 
