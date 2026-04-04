@@ -1,8 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Center, GizmoHelper, GizmoViewport, Environment } from '@react-three/drei';
+import { OrbitControls, Center, GizmoHelper, GizmoViewport, Html, Environment } from '@react-three/drei';
 import { ArrowLeft, SlidersHorizontal, Download } from 'lucide-react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+// 核心解法：利用 Vite 环境变量自动注入生产环境前缀，杜绝 404
+const MODEL_PATH = import.meta.env.BASE_URL + 'models/mask_base.glb';
 
 const CULTURE_MATRIX = [
     { id: 'red', name: '忠勇赤诚', color: '#E62129', desc: '天庭饱满，向外平滑鼓起' },
@@ -12,110 +16,75 @@ const CULTURE_MATRIX = [
     { id: 'gold', name: '神魔仙怪', color: '#FFD700', desc: '天眼拉伸，极高金属反光' }
 ];
 
-// === V2 核心引擎：高阶数学雕刻基模 ===
-const ProceduralHDMask = ({ sliders }: { sliders: Record<string, number> }) => {
-    const geoRef = useRef<THREE.BufferGeometry>(null);
-    const matRef = useRef<THREE.MeshStandardMaterial>(null);
+const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
+    const [model, setModel] = useState<THREE.Group | null>(null);
+    const materialRef = useRef<THREE.MeshStandardMaterial | null>(null);
 
     useEffect(() => {
-        // 1. 初始化高细分半球胎 (极致丝滑)
-        if (!geoRef.current) {
-            const geo = new THREE.SphereGeometry(60, 128, 128, 0, Math.PI);
-            geo.rotateY(Math.PI / 2);
-            
-            const count = geo.attributes.position.count;
-            geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
-            geo.setAttribute('basePosition', geo.attributes.position.clone()); // 备份原坐标
-            geoRef.current = geo;
+        const loader = new GLTFLoader();
+        loader.load(MODEL_PATH, (gltf) => {
+            gltf.scene.traverse((child: any) => {
+                if (child.isMesh) {
+                    const mat = new THREE.MeshStandardMaterial({
+                        color: '#e7e5e4',
+                        roughness: 0.8,
+                        side: THREE.DoubleSide
+                    });
+                    child.material = mat;
+                    materialRef.current = mat;
+                }
+            });
+            // 归一化模型的基础缩放和位置，防止中心点偏移
+            gltf.scene.scale.set(10, 10, 10);
+            gltf.scene.position.set(0, 0, 0);
+            setModel(gltf.scene);
+        }, undefined, (error) => {
+            console.error('[Stargate] 模型加载失败, 检查路径:', MODEL_PATH, error);
+        });
+    }, []);
+
+    // 肌肉绑定逻辑 (ARKit 工业标准形态键)
+    useEffect(() => {
+        if (!model) return;
+        let faceMesh: any = null;
+        model.traverse((child: any) => {
+            if (child.isMesh && child.morphTargetDictionary) faceMesh = child;
+        });
+
+        if (faceMesh && faceMesh.morphTargetDictionary && faceMesh.morphTargetInfluences) {
+            const dict = faceMesh.morphTargetDictionary;
+            const inf = faceMesh.morphTargetInfluences;
+            const w = sliders;
+
+            // 清理影响值
+            inf.fill(0);
+
+            if (dict['cheekPuff'] !== undefined) inf[dict['cheekPuff']] = (w.red/100) * 0.8;
+            if (dict['jawOpen'] !== undefined) inf[dict['jawOpen']] = (w.red/100) * 0.2;
+            if (dict['browDownLeft'] !== undefined) inf[dict['browDownLeft']] = (w.black/100);
+            if (dict['browDownRight'] !== undefined) inf[dict['browDownRight']] = (w.black/100);
+            if (dict['jawForward'] !== undefined) inf[dict['jawForward']] = (w.black/100) * 0.5;
+            if (dict['noseSneerLeft'] !== undefined) inf[dict['noseSneerLeft']] = (w.white/100);
+            if (dict['noseSneerRight'] !== undefined) inf[dict['noseSneerRight']] = (w.white/100);
+            if (dict['mouthRollUpper'] !== undefined) inf[dict['mouthRollUpper']] = (w.yellow/100);
+            if (dict['mouthRollLower'] !== undefined) inf[dict['mouthRollLower']] = (w.yellow/100);
+            if (dict['browInnerUp'] !== undefined) inf[dict['browInnerUp']] = (w.gold/100);
         }
 
-        const geo = geoRef.current;
-        const pos = geo.attributes.position;
-        const basePos = geo.getAttribute('basePosition');
-        const colors = geo.attributes.color;
-        
-        const palette = CULTURE_MATRIX.map(m => new THREE.Color(m.color));
-        const cBase = new THREE.Color('#e7e5e4'); // 陶瓷素胎色
-
-        // 2. 实时拓扑与形变重算 (纯 CPU 极速运算)
-        for (let i = 0; i < pos.count; i++) {
-            let x = basePos.getX(i);
-            let y = basePos.getY(i);
-            let z = basePos.getZ(i);
-
-            // --- A. 基础解剖学曲面 ---
-            x *= 0.8; // 压窄脸型
-            y *= 1.15; // 拉长脸颊
-            
-            // 鼻梁 (平滑高斯突起)
-            const nose = Math.max(0, 1 - (x*x + (y-5)*(y-5))/200) * 22;
-            // 眼窝 (平滑双高斯凹陷)
-            const eyeDist = Math.pow(Math.abs(x) - 20, 2) + Math.pow(y - 25, 2);
-            const eyeDip = Math.max(0, 1 - eyeDist / 180) * -10;
-            // 下颌内收
-            const jaw = y < -20 ? (y + 20) * 0.2 : 0;
-
-            const baseZ = z + nose + eyeDip + jaw;
-
-            // --- B. 五色文化参数形变映射 ---
-            const w = {
-                r: sliders.red / 100, b: sliders.black / 100, w: sliders.white / 100,
-                y: sliders.yellow / 100, g: sliders.gold / 100
-            };
-
-            // 🔴 红：忠勇 (全局脸颊与额头饱满膨胀)
-            const redInflate = Math.max(0, 1 - (x*x + y*y)/3500) * 12 * w.r;
-            // ⚫️ 黑：刚烈 (眉骨阶梯状硬边缘外突)
-            const isBrow = y > 25 && y < 35 && Math.abs(x) < 45;
-            const blackBake = isBrow ? 8 * w.b : 0;
-            // ⚪️ 白：阴险 (眼窝深度向下侵蚀，表现瘦骨嶙峋)
-            const whiteCarve = Math.max(0, 1 - eyeDist/250) * -15 * w.w;
-            // 🟡 黄：野性 (下颌不规则高频肌肉纹理)
-            const isJaw = y < -10;
-            const yellowRidge = isJaw ? (Math.sin(x*0.5)*Math.cos(y*0.5)) * 6 * w.y : 0;
-            // 🟡 金：神魔 (额头天眼尖锐拉伸)
-            const goldPeak = Math.max(0, 1 - (x*x + (y-50)*(y-50))/80) * 25 * w.g;
-
-            // 执行顶点偏移
-            pos.setXYZ(i, x, y, baseZ + redInflate + blackBake + whiteCarve + yellowRidge + goldPeak);
-
-            // --- C. 动态色彩浸染 ---
-            let col = cBase.clone();
-            if (w.r > 0.1 && redInflate > 2) col.lerp(palette[0], w.r);
-            if (w.b > 0.1 && isBrow) col.lerp(palette[1], w.b);
-            if (w.w > 0.1 && whiteCarve < -2) col.lerp(palette[2], w.w);
-            if (w.y > 0.1 && isJaw) col.lerp(palette[3], w.y);
-            if (w.g > 0.1 && goldPeak > 5) col.lerp(palette[4], w.g);
-            
-            colors.setXYZ(i, col.r, col.g, col.b);
+        if (materialRef.current) {
+            materialRef.current.metalness = (sliders.gold / 100) * 0.8;
+            materialRef.current.roughness = 0.5 - (sliders.gold / 100) * 0.3;
         }
+    }, [sliders, model]);
 
-        pos.needsUpdate = true;
-        colors.needsUpdate = true;
-        geo.computeVertexNormals(); // 重算法线生成逼真光影
-        
-        if (matRef.current) {
-            matRef.current.metalness = (sliders.gold / 100) * 0.8;
-            matRef.current.roughness = 0.5 - (sliders.gold / 100) * 0.3;
-        }
-    }, [sliders]);
+    if (!model) return <Html center><div className="text-stone-300 bg-black/80 px-6 py-4 rounded-2xl whitespace-nowrap shadow-xl">挂载工业级基底网格中...</div></Html>;
 
-    const geometry = geoRef.current;
-    if (!geometry) return null;
-
-    return (
-        <mesh geometry={geometry} castShadow receiveShadow>
-            <meshStandardMaterial ref={matRef} vertexColors={true} side={THREE.DoubleSide} />
-        </mesh>
-    );
+    return <primitive object={model} />;
 };
 
 export default function QinqiangMaskPlugin({ config: _config }: { config: any }) {
     const [sliders, setSliders] = useState({ red: 0, black: 0, white: 0, yellow: 0, gold: 0 });
-
-    const handleSliderChange = (id: string, value: number) => {
-        setSliders(prev => ({ ...prev, [id]: value }));
-    };
+    const handleSliderChange = (id: string, value: number) => setSliders(prev => ({ ...prev, [id]: value }));
 
     return (
         <div className="w-full h-screen flex bg-stone-950 text-white font-sans overflow-hidden">
@@ -131,13 +100,22 @@ export default function QinqiangMaskPlugin({ config: _config }: { config: any })
                 </div>
 
                 <div className="p-6 space-y-8 flex-1 overflow-y-auto">
+                    <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+                        <h3 className="text-stone-300 font-bold text-sm mb-2 flex items-center gap-2">
+                            <SlidersHorizontal className="w-4 h-4" /> 注入文化性格
+                        </h3>
+                        <p className="text-[11px] text-stone-500 leading-relaxed font-medium">
+                            基于 52 组 ARKit 面部形态键，将秦腔各色性格寓意映射到高精度面模的基础解剖结构上。
+                        </p>
+                    </div>
+
                     <div className="space-y-6">
                         {CULTURE_MATRIX.map((item) => (
                             <div key={item.id} className="space-y-2 group">
                                 <div className="flex justify-between items-center">
                                     <div className="flex items-center gap-2">
-                                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
-                                        <span className="text-sm font-bold text-stone-300">{item.name}</span>
+                                        <div className="w-3 h-3 rounded-full shadow-inner" style={{ backgroundColor: item.color }} />
+                                        <span className="text-sm font-bold text-stone-300 group-hover:text-white transition-colors">{item.name}</span>
                                     </div>
                                     <span className="text-xs font-mono text-stone-500">{sliders[item.id as keyof typeof sliders]}%</span>
                                 </div>
@@ -152,27 +130,35 @@ export default function QinqiangMaskPlugin({ config: _config }: { config: any })
                     </div>
                 </div>
                 
-                <div className="p-6">
-                    <button onClick={() => window.parent.postMessage({ type: 'EXPORT_3MF_SOLID' }, '*')} className="w-full py-4 rounded bg-purple-700 hover:bg-purple-600 transition-colors font-bold text-sm flex justify-center items-center gap-2 text-white shadow-xl">
-                        <Download className="w-4 h-4" /> 导出立体脸谱
+                <div className="p-6 border-t border-white/5">
+                    <button onClick={() => window.parent.postMessage({ type: 'EXPORT_3MF_SOLID' }, '*')} className="w-full py-4 rounded bg-white text-stone-900 hover:bg-stone-200 transition-all font-bold text-sm flex justify-center items-center gap-2 shadow-xl ring-1 ring-white/10 group active:scale-95 duration-200">
+                        <Download className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" /> 导出立体脸谱
                     </button>
+                    <p className="text-[10px] text-stone-600 text-center mt-3 font-mono">INDUSTRIAL BLENDSHAPES | 3MF READY</p>
                 </div>
             </div>
 
             <div className="flex-1 bg-stone-800 relative">
-                <Canvas camera={{ fov: 45 }}>
+                <Canvas camera={{ fov: 45, position: [0, 0, 150] }}>
                     <color attach="background" args={['#1c1917']} />
                     <ambientLight intensity={0.5} />
                     <directionalLight position={[50, 50, 100]} intensity={2} castShadow />
                     <Environment preset="studio" />
-                    <OrbitControls makeDefault enablePan={true} maxPolarAngle={Math.PI / 1.5} />
+                    <OrbitControls makeDefault enablePan={true} target={[0, 0, 0]} maxPolarAngle={Math.PI / 1.5} />
                     <Center top>
-                        <ProceduralHDMask sliders={sliders} />
+                        <FaceCapModel sliders={sliders} />
                     </Center>
                     <GizmoHelper alignment="top-right" margin={[60, 60]}>
                         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="white" />
                     </GizmoHelper>
                 </Canvas>
+                
+                <div className="absolute bottom-6 right-6 flex flex-col items-end pointer-events-none z-20">
+                    <div className="px-3 py-1 bg-black/40 backdrop-blur-md rounded-full border border-white/5 mb-2">
+                        <span className="text-[9px] font-black text-stone-400 uppercase tracking-widest leading-none">Industrial Base Mesh V1.0</span>
+                    </div>
+                    <span className="text-[9px] text-stone-600 font-mono tracking-tighter italic">52-Group Blendshape Dynamics</span>
+                </div>
             </div>
         </div>
     );
