@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, Center, GizmoHelper, GizmoViewport, useGLTF } from '@react-three/drei';
+import { Canvas, useLoader } from '@react-three/fiber';
+import { OrbitControls, Environment, Center, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import { ArrowLeft, SlidersHorizontal, Download } from 'lucide-react';
 import * as THREE from 'three';
-import { MeshoptDecoder } from 'three-stdlib';
+import { GLTFLoader, MeshoptDecoder } from 'three-stdlib';
 import { exportTo3MF } from 'three-3mf-exporter';
 
 // 文化拓扑矩阵定义
@@ -15,23 +15,18 @@ const CULTURE_MATRIX = [
     { id: 'gold', name: '神魔仙怪', color: '#FFD700', desc: '天眼拉伸，极高金属反光' }
 ];
 
-// 核心修复：对齐母舰框架，使用绝对路径由 Vite 解析
-const FACECAP_URL = '/models/FaceCap.glb';
-
-// 强制同步：注入 Meshopt 解码器到全局加载器
-// @ts-ignore
-useGLTF.setMeshoptDecoder(MeshoptDecoder);
+// 核心修复：去除开头的 /，改用相对路径以适配子目录部署
+const FACECAP_URL = 'models/FaceCap.glb'; 
 
 // === 强悍的 ARKit 面部肌肉映射引擎 ===
 const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
-    // 强制指定物理对齐路径，并注入 MeshoptDecoder 解决压缩报错
-    const gltf = useGLTF(FACECAP_URL, true, true, (loader) => {
+    // 强制使用底层 GLTFLoader，并手动注入 Meshopt 解码器，彻底解决 useGLTF 兼容性问题
+    const gltf = useLoader(GLTFLoader, FACECAP_URL, (loader) => {
         loader.setMeshoptDecoder(MeshoptDecoder);
     });
 
     const materialRef = useRef<THREE.MeshStandardMaterial>(null);
     
-    // ... 保持后续 useEffect 逻辑不变 ...
     // 监听滑块并同步面部肌肉形变
     useEffect(() => {
         let faceMesh: THREE.Mesh | null = null;
@@ -106,9 +101,11 @@ const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
     return <primitive object={gltf.scene} scale={20} />;
 };
 
-// 预加载本地资产，并注入 MeshoptDecoder 解决解压报错
-useGLTF.preload(FACECAP_URL, true, true, (loader) => {
-    loader.setMeshoptDecoder(MeshoptDecoder);
+// 预加载模型，锁定 GLTFLoader 与 Meshopt 解码器
+useLoader.preload(GLTFLoader, FACECAP_URL, (loader) => {
+    if (loader instanceof GLTFLoader) {
+        loader.setMeshoptDecoder(MeshoptDecoder);
+    }
 });
 
 export default function QinqiangMaskPlugin({ config: _config }: { config: any }) {
