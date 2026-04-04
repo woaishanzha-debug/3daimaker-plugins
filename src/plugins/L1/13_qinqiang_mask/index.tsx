@@ -1,11 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Center, GizmoHelper, GizmoViewport, Html, Environment } from '@react-three/drei';
+import { OrbitControls, Center, GizmoHelper, GizmoViewport, Environment } from '@react-three/drei';
 import { ArrowLeft, SlidersHorizontal, Download } from 'lucide-react';
 import * as THREE from 'three';
-// 只引入最核心、最原始的 GLTFLoader，抛弃所有关于解码的冗余
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { exportTo3MF } from 'three-3mf-exporter';
 
 const CULTURE_MATRIX = [
     { id: 'red', name: '忠勇赤诚', color: '#E62129', desc: '天庭饱满，向外平滑鼓起' },
@@ -15,183 +12,167 @@ const CULTURE_MATRIX = [
     { id: 'gold', name: '神魔仙怪', color: '#FFD700', desc: '天眼拉伸，极高金属反光' }
 ];
 
-const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
-    const [model, setModel] = useState<THREE.Group | null>(null);
-    const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+// === V2 核心引擎：高阶数学雕刻基模 ===
+const ProceduralHDMask = ({ sliders }: { sliders: Record<string, number> }) => {
+    const geoRef = useRef<THREE.BufferGeometry>(null);
+    const matRef = useRef<THREE.MeshStandardMaterial>(null);
 
-    // 纯手动加载：指向已经物理脱壳解压后的 RAW 文件，彻底解决解码报错
     useEffect(() => {
-        const loader = new GLTFLoader();
-        loader.load('models/FaceCap_raw.glb', (gltf) => {
-            gltf.scene.traverse((child: THREE.Object3D) => {
-                if ((child as THREE.Mesh).isMesh) {
-                    const mesh = child as THREE.Mesh;
-                    mesh.material = new THREE.MeshStandardMaterial({
-                        color: '#e7e5e4',
-                        roughness: 0.8,
-                        side: THREE.DoubleSide
-                    });
-                    // @ts-ignore
-                    materialRef.current = mesh.material;
-                }
-            });
-            setModel(gltf.scene);
-        });
-    }, []);
-
-    // 肌肉绑定逻辑 (保持稳定)
-    useEffect(() => {
-        if (!model) return;
-        let faceMesh: THREE.Mesh | null = null;
-        model.traverse((child: THREE.Object3D) => {
-            if ((child as THREE.Mesh).isMesh && (child as any).morphTargetDictionary) {
-                faceMesh = child as THREE.Mesh;
-            }
-        });
-
-        if (faceMesh && (faceMesh as any).morphTargetDictionary && (faceMesh as any).morphTargetInfluences) {
-            const dict = (faceMesh as any).morphTargetDictionary;
-            const inf = (faceMesh as any).morphTargetInfluences;
-            const w = sliders;
-
-            if (dict['cheekPuff'] !== undefined) inf[dict['cheekPuff']] = (w.red/100) * 0.8;
-            if (dict['jawOpen'] !== undefined) inf[dict['jawOpen']] = (w.red/100) * 0.2;
-            if (dict['browDownLeft'] !== undefined) inf[dict['browDownLeft']] = (w.black/100);
-            if (dict['browDownRight'] !== undefined) inf[dict['browDownRight']] = (w.black/100);
-            if (dict['jawForward'] !== undefined) inf[dict['jawForward']] = (w.black/100) * 0.5;
-            if (dict['noseSneerLeft'] !== undefined) inf[dict['noseSneerLeft']] = (w.white/100);
-            if (dict['noseSneerRight'] !== undefined) inf[dict['noseSneerRight']] = (w.white/100);
-            if (dict['eyeSquintLeft'] !== undefined) inf[dict['eyeSquintLeft']] = (w.white/100);
-            if (dict['eyeSquintRight'] !== undefined) inf[dict['eyeSquintRight']] = (w.white/100);
-            if (dict['mouthRollUpper'] !== undefined) inf[dict['mouthRollUpper']] = (w.yellow/100);
-            if (dict['mouthRollLower'] !== undefined) inf[dict['mouthRollLower']] = (w.yellow/100);
-            if (dict['browInnerUp'] !== undefined) inf[dict['browInnerUp']] = (w.gold/100);
+        // 1. 初始化高细分半球胎 (极致丝滑)
+        if (!geoRef.current) {
+            const geo = new THREE.SphereGeometry(60, 128, 128, 0, Math.PI);
+            geo.rotateY(Math.PI / 2);
+            
+            const count = geo.attributes.position.count;
+            geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+            geo.setAttribute('basePosition', geo.attributes.position.clone()); // 备份原坐标
+            geoRef.current = geo;
         }
 
-        if (materialRef.current) {
-            materialRef.current.metalness = (sliders.gold / 100) * 0.8;
-            materialRef.current.roughness = 0.5 - (sliders.gold / 100) * 0.3;
+        const geo = geoRef.current;
+        const pos = geo.attributes.position;
+        const basePos = geo.getAttribute('basePosition');
+        const colors = geo.attributes.color;
+        
+        const palette = CULTURE_MATRIX.map(m => new THREE.Color(m.color));
+        const cBase = new THREE.Color('#e7e5e4'); // 陶瓷素胎色
+
+        // 2. 实时拓扑与形变重算 (纯 CPU 极速运算)
+        for (let i = 0; i < pos.count; i++) {
+            let x = basePos.getX(i);
+            let y = basePos.getY(i);
+            let z = basePos.getZ(i);
+
+            // --- A. 基础解剖学曲面 ---
+            x *= 0.8; // 压窄脸型
+            y *= 1.15; // 拉长脸颊
+            
+            // 鼻梁 (平滑高斯突起)
+            const nose = Math.max(0, 1 - (x*x + (y-5)*(y-5))/200) * 22;
+            // 眼窝 (平滑双高斯凹陷)
+            const eyeDist = Math.pow(Math.abs(x) - 20, 2) + Math.pow(y - 25, 2);
+            const eyeDip = Math.max(0, 1 - eyeDist / 180) * -10;
+            // 下颌内收
+            const jaw = y < -20 ? (y + 20) * 0.2 : 0;
+
+            const baseZ = z + nose + eyeDip + jaw;
+
+            // --- B. 五色文化参数形变映射 ---
+            const w = {
+                r: sliders.red / 100, b: sliders.black / 100, w: sliders.white / 100,
+                y: sliders.yellow / 100, g: sliders.gold / 100
+            };
+
+            // 🔴 红：忠勇 (全局脸颊与额头饱满膨胀)
+            const redInflate = Math.max(0, 1 - (x*x + y*y)/3500) * 12 * w.r;
+            // ⚫️ 黑：刚烈 (眉骨阶梯状硬边缘外突)
+            const isBrow = y > 25 && y < 35 && Math.abs(x) < 45;
+            const blackBake = isBrow ? 8 * w.b : 0;
+            // ⚪️ 白：阴险 (眼窝深度向下侵蚀，表现瘦骨嶙峋)
+            const whiteCarve = Math.max(0, 1 - eyeDist/250) * -15 * w.w;
+            // 🟡 黄：野性 (下颌不规则高频肌肉纹理)
+            const isJaw = y < -10;
+            const yellowRidge = isJaw ? (Math.sin(x*0.5)*Math.cos(y*0.5)) * 6 * w.y : 0;
+            // 🟡 金：神魔 (额头天眼尖锐拉伸)
+            const goldPeak = Math.max(0, 1 - (x*x + (y-50)*(y-50))/80) * 25 * w.g;
+
+            // 执行顶点偏移
+            pos.setXYZ(i, x, y, baseZ + redInflate + blackBake + whiteCarve + yellowRidge + goldPeak);
+
+            // --- C. 动态色彩浸染 ---
+            let col = cBase.clone();
+            if (w.r > 0.1 && redInflate > 2) col.lerp(palette[0], w.r);
+            if (w.b > 0.1 && isBrow) col.lerp(palette[1], w.b);
+            if (w.w > 0.1 && whiteCarve < -2) col.lerp(palette[2], w.w);
+            if (w.y > 0.1 && isJaw) col.lerp(palette[3], w.y);
+            if (w.g > 0.1 && goldPeak > 5) col.lerp(palette[4], w.g);
+            
+            colors.setXYZ(i, col.r, col.g, col.b);
         }
-    }, [sliders, model]);
 
-    if (!model) return <Html center><div className="text-stone-300 bg-stone-900/80 px-8 py-6 rounded-3xl border border-white/10 whitespace-nowrap shadow-2xl flex flex-col items-center gap-4 backdrop-blur-xl animate-pulse uppercase tracking-widest text-[10px] font-bold">同步圣门原始拓扑...</div></Html>;
+        pos.needsUpdate = true;
+        colors.needsUpdate = true;
+        geo.computeVertexNormals(); // 重算法线生成逼真光影
+        
+        if (matRef.current) {
+            matRef.current.metalness = (sliders.gold / 100) * 0.8;
+            matRef.current.roughness = 0.5 - (sliders.gold / 100) * 0.3;
+        }
+    }, [sliders]);
 
-    return <primitive object={model} scale={20} />;
+    const geometry = geoRef.current;
+    if (!geometry) return null;
+
+    return (
+        <mesh geometry={geometry} castShadow receiveShadow>
+            <meshStandardMaterial ref={matRef} vertexColors={true} side={THREE.DoubleSide} />
+        </mesh>
+    );
 };
 
 export default function QinqiangMaskPlugin({ config: _config }: { config: any }) {
     const [sliders, setSliders] = useState({ red: 0, black: 0, white: 0, yellow: 0, gold: 0 });
-    const sceneRef = useRef<THREE.Group>(null);
-    const [exporting, setExporting] = useState(false);
 
-    const handleSliderChange = (id: string, value: number) => setSliders(prev => ({ ...prev, [id]: value }));
-
-    const handleExport3MF = async () => {
-        if (!sceneRef.current) return;
-        setExporting(true);
-        try {
-            const blob = await exportTo3MF(sceneRef.current);
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `qinqiang_mask_${new Date().getTime()}.3mf`;
-            link.click();
-            URL.revokeObjectURL(url);
-            setExporting(false);
-        } catch (error) {
-            console.error('Export failed:', error);
-            setExporting(false);
-        }
+    const handleSliderChange = (id: string, value: number) => {
+        setSliders(prev => ({ ...prev, [id]: value }));
     };
 
     return (
         <div className="w-full h-screen flex bg-stone-950 text-white font-sans overflow-hidden">
-            {/* 左侧 UI 控制台 */}
-            <div className="w-[360px] bg-stone-900 border-r border-stone-800 flex flex-col z-10 shrink-0 shadow-[20px_0_50px_-20px_rgba(0,0,0,0.5)]">
-                <div className="p-8 border-b border-white/5 flex items-center gap-5 shrink-0">
-                    <button onClick={() => window.parent.postMessage({ type: 'EXIT_PLUGIN' }, '*')} className="text-white/20 hover:text-white transition-all transform hover:-translate-x-1">
-                        <ArrowLeft className="w-6 h-6" />
+            <div className="w-[360px] bg-stone-900 border-r border-stone-800 flex flex-col z-10 shrink-0 shadow-2xl">
+                <div className="p-6 border-b border-white/5 flex items-center gap-4 shrink-0">
+                    <button onClick={() => window.parent.postMessage({ type: 'EXIT_PLUGIN' }, '*')} className="text-white/30 hover:text-white transition-colors">
+                        <ArrowLeft className="w-5 h-5" />
                     </button>
                     <div>
-                        <div className="flex items-center gap-2 mb-1">
-                            <span className="px-2 py-0.5 rounded bg-stone-800 text-stone-500 text-[9px] font-black uppercase tracking-[0.2em] border border-white/5">Course L1-13</span>
-                            <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_#22c55e]" />
-                        </div>
-                        <h1 className="font-black text-xl tracking-tighter text-stone-100 uppercase">秦腔：性格拓扑机</h1>
+                        <span className="px-2 py-0.5 rounded bg-stone-800 text-stone-400 text-[10px] font-black uppercase">L1-13</span>
+                        <h1 className="font-black text-lg tracking-widest text-stone-200 mt-1">秦腔脸谱：性格拓扑</h1>
                     </div>
                 </div>
 
-                <div className="p-8 space-y-10 flex-1 overflow-y-auto custom-scrollbar">
-                    <div className="p-5 bg-gradient-to-br from-white/5 to-transparent rounded-2xl border border-white/10 shadow-inner">
-                        <h3 className="text-stone-200 font-black text-xs mb-3 flex items-center gap-2 uppercase tracking-widest">
-                            <SlidersHorizontal className="w-4 h-4 text-stone-500" /> 注入文化性格
-                        </h3>
-                        <p className="text-[11px] text-stone-500 leading-relaxed font-bold italic opacity-80">
-                            "RAW 版面心拓拔器"：已脱离 Meshopt 依赖，支持全平台高性能呈现。
-                        </p>
-                    </div>
-
-                    <div className="space-y-8">
+                <div className="p-6 space-y-8 flex-1 overflow-y-auto">
+                    <div className="space-y-6">
                         {CULTURE_MATRIX.map((item) => (
-                            <div key={item.id} className="space-y-4 group">
+                            <div key={item.id} className="space-y-2 group">
                                 <div className="flex justify-between items-center">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-4 h-4 rounded-full shadow-inner border border-white/10" style={{ backgroundColor: item.color }} />
-                                        <span className="text-sm font-black text-stone-400 group-hover:text-stone-100 transition-colors uppercase tracking-tight">{item.name}</span>
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
+                                        <span className="text-sm font-bold text-stone-300">{item.name}</span>
                                     </div>
-                                    <div className="px-2 py-1 bg-stone-800 rounded font-mono text-[10px] text-stone-300 border border-white/5">{sliders[item.id as keyof typeof sliders]}%</div>
+                                    <span className="text-xs font-mono text-stone-500">{sliders[item.id as keyof typeof sliders]}%</span>
                                 </div>
                                 <input 
                                     type="range" min="0" max="100" value={sliders[item.id as keyof typeof sliders]}
                                     onChange={(e) => handleSliderChange(item.id, parseInt(e.target.value))}
-                                    className="w-full h-1.5 bg-stone-800 rounded-full appearance-none cursor-pointer accent-stone-300 hover:accent-white transition-all outline-none border border-white/5"
+                                    className="w-full h-1 bg-stone-800 rounded-lg appearance-none cursor-pointer accent-stone-400"
                                 />
-                                <p className="text-[10px] text-stone-600 font-bold uppercase tracking-widest leading-none opacity-50">{item.desc}</p>
+                                <p className="text-[10px] text-stone-600 font-medium italic">{item.desc}</p>
                             </div>
                         ))}
                     </div>
                 </div>
                 
-                <div className="p-8 border-t border-white/5 bg-stone-900/80 backdrop-blur-3xl shadow-[0_-20px_50px_-20px_rgba(0,0,0,0.5)]">
-                    <button 
-                        onClick={handleExport3MF}
-                        disabled={exporting}
-                        className="w-full py-5 rounded-2xl bg-white text-stone-950 hover:bg-stone-200 disabled:bg-stone-800 disabled:text-stone-600 font-black text-xs uppercase tracking-widest flex justify-center items-center gap-3 shadow-[0_10px_30px_-10px_rgba(255,255,255,0.3)] transition-all active:scale-[0.98] group"
-                    >
-                        {exporting ? (
-                            <div className="w-4 h-4 border-3 border-stone-800/20 border-t-stone-800 rounded-full animate-spin" />
-                        ) : (
-                            <Download className="w-5 h-5 group-hover:translate-y-1 transition-transform" />
-                        )}
-                        {exporting ? 'RAW 实体脸模计算中...' : '导出 3MF 立体脸谱'}
+                <div className="p-6">
+                    <button onClick={() => window.parent.postMessage({ type: 'EXPORT_3MF_SOLID' }, '*')} className="w-full py-4 rounded bg-purple-700 hover:bg-purple-600 transition-colors font-bold text-sm flex justify-center items-center gap-2 text-white shadow-xl">
+                        <Download className="w-4 h-4" /> 导出立体脸谱
                     </button>
                 </div>
             </div>
 
-            {/* 右侧 3D 视口 */}
-            <div className="flex-1 bg-stone-950 relative">
+            <div className="flex-1 bg-stone-800 relative">
                 <Canvas camera={{ fov: 45 }}>
-                    <color attach="background" args={['#0c0a09']} />
+                    <color attach="background" args={['#1c1917']} />
                     <ambientLight intensity={0.5} />
-                    <spotLight position={[10, 10, 10]} intensity={1} castShadow />
+                    <directionalLight position={[50, 50, 100]} intensity={2} castShadow />
                     <Environment preset="studio" />
                     <OrbitControls makeDefault enablePan={true} maxPolarAngle={Math.PI / 1.5} />
                     <Center top>
-                        <group ref={sceneRef}>
-                            <FaceCapModel sliders={sliders} />
-                        </group>
+                        <ProceduralHDMask sliders={sliders} />
                     </Center>
-                    <GizmoHelper alignment="top-right" margin={[80, 80]}>
+                    <GizmoHelper alignment="top-right" margin={[60, 60]}>
                         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="white" />
                     </GizmoHelper>
                 </Canvas>
-                
-                {/* 状态看板 */}
-                <div className="absolute top-8 right-8 pointer-events-none z-20 flex flex-col items-end gap-2 opacity-40">
-                    <div className="px-4 py-1 bg-white/5 backdrop-blur-xl rounded-full border border-white/10">
-                        <span className="text-[10px] font-black text-stone-300 uppercase tracking-[0.3em]">FaceCap RAW Engine</span>
-                    </div>
-                </div>
             </div>
         </div>
     );
