@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { Canvas, useLoader } from '@react-three/fiber';
-import { OrbitControls, Environment, Center, GizmoHelper, GizmoViewport } from '@react-three/drei';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls, Center, GizmoHelper, GizmoViewport, Html, Environment } from '@react-three/drei';
 import { ArrowLeft, SlidersHorizontal, Download } from 'lucide-react';
 import * as THREE from 'three';
-import { GLTFLoader, MeshoptDecoder } from 'three-stdlib';
+// 只引入最核心、最原始的 GLTFLoader，抛弃所有关于解码的冗余
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { exportTo3MF } from 'three-3mf-exporter';
 
-// 文化拓扑矩阵定义
 const CULTURE_MATRIX = [
     { id: 'red', name: '忠勇赤诚', color: '#E62129', desc: '天庭饱满，向外平滑鼓起' },
     { id: 'black', name: '刚烈铁面', color: '#1A1A1A', desc: '眉骨凸出，阶梯状硬边缘' },
@@ -15,112 +15,80 @@ const CULTURE_MATRIX = [
     { id: 'gold', name: '神魔仙怪', color: '#FFD700', desc: '天眼拉伸，极高金属反光' }
 ];
 
-// 核心修复：去除开头的 /，改用相对路径以适配子目录部署
-const FACECAP_URL = 'models/FaceCap.glb'; 
-
-// === 强悍的 ARKit 面部肌肉映射引擎 ===
 const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
-    // 强制使用底层 GLTFLoader，并手动注入 Meshopt 解码器，彻底解决 useGLTF 兼容性问题
-    const gltf = useLoader(GLTFLoader, FACECAP_URL, (loader) => {
-        loader.setMeshoptDecoder(MeshoptDecoder);
-    });
-
+    const [model, setModel] = useState<THREE.Group | null>(null);
     const materialRef = useRef<THREE.MeshStandardMaterial>(null);
-    
-    // 监听滑块并同步面部肌肉形变
+
+    // 纯手动加载：指向已经物理脱壳解压后的 RAW 文件，彻底解决解码报错
     useEffect(() => {
+        const loader = new GLTFLoader();
+        loader.load('models/FaceCap_raw.glb', (gltf) => {
+            gltf.scene.traverse((child: THREE.Object3D) => {
+                if ((child as THREE.Mesh).isMesh) {
+                    const mesh = child as THREE.Mesh;
+                    mesh.material = new THREE.MeshStandardMaterial({
+                        color: '#e7e5e4',
+                        roughness: 0.8,
+                        side: THREE.DoubleSide
+                    });
+                    // @ts-ignore
+                    materialRef.current = mesh.material;
+                }
+            });
+            setModel(gltf.scene);
+        });
+    }, []);
+
+    // 肌肉绑定逻辑 (保持稳定)
+    useEffect(() => {
+        if (!model) return;
         let faceMesh: THREE.Mesh | null = null;
-        
-        // 安全遍历：自动寻找带有形态键的面部 Mesh
-        gltf.scene.traverse((child: any) => {
-            if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).morphTargetDictionary) {
+        model.traverse((child: THREE.Object3D) => {
+            if ((child as THREE.Mesh).isMesh && (child as any).morphTargetDictionary) {
                 faceMesh = child as THREE.Mesh;
             }
         });
 
-        if (faceMesh) {
-            const mesh = faceMesh as THREE.Mesh;
-            const dict = mesh.morphTargetDictionary;
-            const inf = mesh.morphTargetInfluences;
+        if (faceMesh && (faceMesh as any).morphTargetDictionary && (faceMesh as any).morphTargetInfluences) {
+            const dict = (faceMesh as any).morphTargetDictionary;
+            const inf = (faceMesh as any).morphTargetInfluences;
+            const w = sliders;
 
-            if (dict && inf) {
-                const redW = sliders.red / 100;
-                const blackW = sliders.black / 100;
-                const whiteW = sliders.white / 100;
-                const yellowW = sliders.yellow / 100;
-                const goldW = sliders.gold / 100;
-
-                // 🔴 红色：忠勇 (对应 ARKit: 鼓腮 CheekPuff)
-                if (dict['cheekPuff'] !== undefined) inf[dict['cheekPuff']] = redW * 0.8;
-                if (dict['jawOpen'] !== undefined) inf[dict['jawOpen']] = redW * 0.2;
-
-                // ⚫️ 黑色：刚烈 (对应 ARKit: 怒眉 browDownLeft/Right)
-                if (dict['browDownLeft'] !== undefined) inf[dict['browDownLeft']] = blackW;
-                if (dict['browDownRight'] !== undefined) inf[dict['browDownRight']] = blackW;
-                if (dict['jawForward'] !== undefined) inf[dict['jawForward']] = blackW * 0.5;
-
-                // ⚪️ 白色：阴险 (对应 ARKit: 皱鼻 noseSneerLeft/Right)
-                if (dict['noseSneerLeft'] !== undefined) inf[dict['noseSneerLeft']] = whiteW;
-                if (dict['noseSneerRight'] !== undefined) inf[dict['noseSneerRight']] = whiteW;
-                if (dict['eyeSquintLeft'] !== undefined) inf[dict['eyeSquintLeft']] = whiteW;
-                if (dict['eyeSquintRight'] !== undefined) inf[dict['eyeSquintRight']] = whiteW;
-
-                // 🟡 黄色：野性 (对应 ARKit: 咧嘴 mouthRollUpper/Lower)
-                if (dict['mouthRollUpper'] !== undefined) inf[dict['mouthRollUpper']] = yellowW;
-                if (dict['mouthRollLower'] !== undefined) inf[dict['mouthRollLower']] = yellowW;
-
-                // 🟡 金色：神魔 (对应 ARKit: 眉心上提 browInnerUp)
-                if (dict['browInnerUp'] !== undefined) inf[dict['browInnerUp']] = goldW;
-            }
+            if (dict['cheekPuff'] !== undefined) inf[dict['cheekPuff']] = (w.red/100) * 0.8;
+            if (dict['jawOpen'] !== undefined) inf[dict['jawOpen']] = (w.red/100) * 0.2;
+            if (dict['browDownLeft'] !== undefined) inf[dict['browDownLeft']] = (w.black/100);
+            if (dict['browDownRight'] !== undefined) inf[dict['browDownRight']] = (w.black/100);
+            if (dict['jawForward'] !== undefined) inf[dict['jawForward']] = (w.black/100) * 0.5;
+            if (dict['noseSneerLeft'] !== undefined) inf[dict['noseSneerLeft']] = (w.white/100);
+            if (dict['noseSneerRight'] !== undefined) inf[dict['noseSneerRight']] = (w.white/100);
+            if (dict['eyeSquintLeft'] !== undefined) inf[dict['eyeSquintLeft']] = (w.white/100);
+            if (dict['eyeSquintRight'] !== undefined) inf[dict['eyeSquintRight']] = (w.white/100);
+            if (dict['mouthRollUpper'] !== undefined) inf[dict['mouthRollUpper']] = (w.yellow/100);
+            if (dict['mouthRollLower'] !== undefined) inf[dict['mouthRollLower']] = (w.yellow/100);
+            if (dict['browInnerUp'] !== undefined) inf[dict['browInnerUp']] = (w.gold/100);
         }
 
-        // 金色滑块依然接管物理材质的金属度
         if (materialRef.current) {
             materialRef.current.metalness = (sliders.gold / 100) * 0.8;
             materialRef.current.roughness = 0.5 - (sliders.gold / 100) * 0.3;
         }
-    }, [sliders, gltf.scene]);
+    }, [sliders, model]);
 
-    // 注入新的材质以支持颜色混合
-    useEffect(() => {
-        gltf.scene.traverse((child: any) => {
-            if ((child as THREE.Mesh).isMesh) {
-                const mesh = child as THREE.Mesh;
-                // 替换掉模型自带的写实材质，换成我们的参数化基底材质
-                mesh.material = new THREE.MeshStandardMaterial({
-                    color: '#e7e5e4', // 朴素的底胎颜色
-                    roughness: 0.8,
-                    side: THREE.DoubleSide
-                });
-                // @ts-ignore
-                materialRef.current = mesh.material;
-            }
-        });
-    }, [gltf.scene]);
+    if (!model) return <Html center><div className="text-stone-300 bg-stone-900/80 px-8 py-6 rounded-3xl border border-white/10 whitespace-nowrap shadow-2xl flex flex-col items-center gap-4 backdrop-blur-xl animate-pulse uppercase tracking-widest text-[10px] font-bold">同步圣门原始拓扑...</div></Html>;
 
-    return <primitive object={gltf.scene} scale={20} />;
+    return <primitive object={model} scale={20} />;
 };
-
-// 预加载模型，锁定 GLTFLoader 与 Meshopt 解码器
-useLoader.preload(GLTFLoader, FACECAP_URL, (loader) => {
-    if (loader instanceof GLTFLoader) {
-        loader.setMeshoptDecoder(MeshoptDecoder);
-    }
-});
 
 export default function QinqiangMaskPlugin({ config: _config }: { config: any }) {
     const [sliders, setSliders] = useState({ red: 0, black: 0, white: 0, yellow: 0, gold: 0 });
     const sceneRef = useRef<THREE.Group>(null);
     const [exporting, setExporting] = useState(false);
 
-    const handleSliderChange = (id: string, value: number) => {
-        setSliders(prev => ({ ...prev, [id]: value }));
-    };
+    const handleSliderChange = (id: string, value: number) => setSliders(prev => ({ ...prev, [id]: value }));
 
     const handleExport3MF = async () => {
         if (!sceneRef.current) return;
         setExporting(true);
-        
         try {
             const blob = await exportTo3MF(sceneRef.current);
             const url = URL.createObjectURL(blob);
@@ -138,95 +106,91 @@ export default function QinqiangMaskPlugin({ config: _config }: { config: any })
 
     return (
         <div className="w-full h-screen flex bg-stone-950 text-white font-sans overflow-hidden">
-            {/* 左侧控制台：文化参数注入 */}
-            <div className="w-[360px] bg-stone-900 border-r border-stone-800 flex flex-col z-10 shrink-0 shadow-2xl">
-                <div className="p-6 border-b border-white/5 flex items-center gap-4 shrink-0">
-                    <button onClick={() => window.parent.postMessage({ type: 'EXIT_PLUGIN' }, '*')} className="text-white/30 hover:text-white transition-colors">
-                        <ArrowLeft className="w-5 h-5" />
+            {/* 左侧 UI 控制台 */}
+            <div className="w-[360px] bg-stone-900 border-r border-stone-800 flex flex-col z-10 shrink-0 shadow-[20px_0_50px_-20px_rgba(0,0,0,0.5)]">
+                <div className="p-8 border-b border-white/5 flex items-center gap-5 shrink-0">
+                    <button onClick={() => window.parent.postMessage({ type: 'EXIT_PLUGIN' }, '*')} className="text-white/20 hover:text-white transition-all transform hover:-translate-x-1">
+                        <ArrowLeft className="w-6 h-6" />
                     </button>
                     <div>
-                        <span className="px-2 py-0.5 rounded bg-stone-800 text-stone-400 text-[10px] font-black uppercase">L1-13</span>
-                        <h1 className="font-black text-lg tracking-widest text-stone-200 mt-1">秦腔脸谱：性格拓扑</h1>
+                        <div className="flex items-center gap-2 mb-1">
+                            <span className="px-2 py-0.5 rounded bg-stone-800 text-stone-500 text-[9px] font-black uppercase tracking-[0.2em] border border-white/5">Course L1-13</span>
+                            <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_#22c55e]" />
+                        </div>
+                        <h1 className="font-black text-xl tracking-tighter text-stone-100 uppercase">秦腔：性格拓扑机</h1>
                     </div>
                 </div>
 
-                <div className="p-6 space-y-8 flex-1 overflow-y-auto">
-                    <div className="p-4 bg-white/5 rounded-xl border border-white/10">
-                        <h3 className="text-stone-300 font-bold text-sm mb-2 flex items-center gap-2">
-                            <SlidersHorizontal className="w-4 h-4" /> 注入文化性格
+                <div className="p-8 space-y-10 flex-1 overflow-y-auto custom-scrollbar">
+                    <div className="p-5 bg-gradient-to-br from-white/5 to-transparent rounded-2xl border border-white/10 shadow-inner">
+                        <h3 className="text-stone-200 font-black text-xs mb-3 flex items-center gap-2 uppercase tracking-widest">
+                            <SlidersHorizontal className="w-4 h-4 text-stone-500" /> 注入文化性格
                         </h3>
-                        <p className="text-[11px] text-stone-500 leading-relaxed font-medium">
-                            拖动滑块，将非遗文化中的性格寓意映射到解剖学级的 ARKit 面部肌肉形变上，实现骨相生命力。
+                        <p className="text-[11px] text-stone-500 leading-relaxed font-bold italic opacity-80">
+                            "RAW 版面心拓拔器"：已脱离 Meshopt 依赖，支持全平台高性能呈现。
                         </p>
                     </div>
 
-                    <div className="space-y-6">
+                    <div className="space-y-8">
                         {CULTURE_MATRIX.map((item) => (
-                            <div key={item.id} className="space-y-2 group">
+                            <div key={item.id} className="space-y-4 group">
                                 <div className="flex justify-between items-center">
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-3 h-3 rounded-full shadow-inner" style={{ backgroundColor: item.color }} />
-                                        <span className="text-sm font-bold text-stone-300 group-hover:text-white transition-colors">{item.name}</span>
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-4 h-4 rounded-full shadow-inner border border-white/10" style={{ backgroundColor: item.color }} />
+                                        <span className="text-sm font-black text-stone-400 group-hover:text-stone-100 transition-colors uppercase tracking-tight">{item.name}</span>
                                     </div>
-                                    <span className="text-xs font-mono text-stone-500">{sliders[item.id as keyof typeof sliders]}%</span>
+                                    <div className="px-2 py-1 bg-stone-800 rounded font-mono text-[10px] text-stone-300 border border-white/5">{sliders[item.id as keyof typeof sliders]}%</div>
                                 </div>
                                 <input 
                                     type="range" min="0" max="100" value={sliders[item.id as keyof typeof sliders]}
                                     onChange={(e) => handleSliderChange(item.id, parseInt(e.target.value))}
-                                    className="w-full h-1 bg-stone-800 rounded-lg appearance-none cursor-pointer accent-stone-400"
+                                    className="w-full h-1.5 bg-stone-800 rounded-full appearance-none cursor-pointer accent-stone-300 hover:accent-white transition-all outline-none border border-white/5"
                                 />
-                                <p className="text-[10px] text-stone-600 font-medium italic">{item.desc}</p>
+                                <p className="text-[10px] text-stone-600 font-bold uppercase tracking-widest leading-none opacity-50">{item.desc}</p>
                             </div>
                         ))}
                     </div>
                 </div>
-
-                {/* 导出按钮：实体打印引擎 */}
-                <div className="p-6 border-t border-white/5 bg-stone-900/50 backdrop-blur-md">
+                
+                <div className="p-8 border-t border-white/5 bg-stone-900/80 backdrop-blur-3xl shadow-[0_-20px_50px_-20px_rgba(0,0,0,0.5)]">
                     <button 
                         onClick={handleExport3MF}
                         disabled={exporting}
-                        className="w-full py-4 rounded bg-purple-700 hover:bg-purple-600 disabled:bg-stone-700 transition-colors font-bold text-sm flex justify-center items-center gap-2 text-white shadow-xl ring-1 ring-white/10 group active:scale-95 duration-200"
+                        className="w-full py-5 rounded-2xl bg-white text-stone-950 hover:bg-stone-200 disabled:bg-stone-800 disabled:text-stone-600 font-black text-xs uppercase tracking-widest flex justify-center items-center gap-3 shadow-[0_10px_30px_-10px_rgba(255,255,255,0.3)] transition-all active:scale-[0.98] group"
                     >
                         {exporting ? (
-                            <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                            <div className="w-4 h-4 border-3 border-stone-800/20 border-t-stone-800 rounded-full animate-spin" />
                         ) : (
-                            <Download className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" />
+                            <Download className="w-5 h-5 group-hover:translate-y-1 transition-transform" />
                         )}
-                        {exporting ? '正在生成实体脸模...' : '导出 3D 打印立体脸谱'}
+                        {exporting ? 'RAW 实体脸模计算中...' : '导出 3MF 立体脸谱'}
                     </button>
-                    <p className="text-[10px] text-stone-600 text-center mt-3 font-mono">3MF | ARKit Morph Matrix | AMS Ready</p>
                 </div>
             </div>
 
-            {/* 右侧 3D 视口：ARKit 肌肉驱动版 */}
-            <div className="flex-1 bg-stone-800 relative">
-                <Canvas shadows camera={{ fov: 45 }}>
-                    <color attach="background" args={['#1c1917']} />
+            {/* 右侧 3D 视口 */}
+            <div className="flex-1 bg-stone-950 relative">
+                <Canvas camera={{ fov: 45 }}>
+                    <color attach="background" args={['#0c0a09']} />
                     <ambientLight intensity={0.5} />
-                    <directionalLight position={[50, 50, 100]} intensity={2} castShadow />
+                    <spotLight position={[10, 10, 10]} intensity={1} castShadow />
                     <Environment preset="studio" />
-                    
                     <OrbitControls makeDefault enablePan={true} maxPolarAngle={Math.PI / 1.5} />
-
-                {/* <Center> 组件是拯救视口过小的终极魔法，它会自动将模型Bounding Box中心移至原点并适配相机 */}
-                <Center top>
-                    <group ref={sceneRef}>
-                        <FaceCapModel sliders={sliders} />
-                    </group>
-                </Center>
-                    
-                    <GizmoHelper alignment="top-right" margin={[60, 60]}>
+                    <Center top>
+                        <group ref={sceneRef}>
+                            <FaceCapModel sliders={sliders} />
+                        </group>
+                    </Center>
+                    <GizmoHelper alignment="top-right" margin={[80, 80]}>
                         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="white" />
                     </GizmoHelper>
                 </Canvas>
                 
                 {/* 状态看板 */}
-                <div className="absolute bottom-6 right-6 flex flex-col items-end pointer-events-none z-20">
-                    <div className="px-3 py-1 bg-black/40 backdrop-blur-md rounded-full border border-white/5 mb-2">
-                        <span className="text-[9px] font-black text-stone-400 uppercase tracking-widest leading-none">High-Poly FaceCap Base</span>
+                <div className="absolute top-8 right-8 pointer-events-none z-20 flex flex-col items-end gap-2 opacity-40">
+                    <div className="px-4 py-1 bg-white/5 backdrop-blur-xl rounded-full border border-white/10">
+                        <span className="text-[10px] font-black text-stone-300 uppercase tracking-[0.3em]">FaceCap RAW Engine</span>
                     </div>
-                    <span className="text-[9px] text-stone-600 font-mono tracking-tighter">ARKit 52 Shapes | Zero Procedural Artifacts</span>
                 </div>
             </div>
         </div>
