@@ -1,12 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Center, GizmoHelper, GizmoViewport, Html, Environment } from '@react-three/drei';
+import { OrbitControls, Center, GizmoHelper, GizmoViewport, Html, Environment, useGLTF } from '@react-three/drei';
 import { ArrowLeft, SlidersHorizontal, Download } from 'lucide-react';
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-
-// 核心解法：利用 Vite 环境变量自动注入生产环境前缀，杜绝 404
-const MODEL_PATH = import.meta.env.BASE_URL + 'models/mask_base.glb';
 
 const CULTURE_MATRIX = [
     { id: 'red', name: '忠勇赤诚', color: '#E62129', desc: '天庭饱满，向外平滑鼓起' },
@@ -17,37 +13,38 @@ const CULTURE_MATRIX = [
 ];
 
 const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
-    const [model, setModel] = useState<THREE.Group | null>(null);
+    // 完美对齐虎符路径策略
+    const MODEL_URL = `${import.meta.env.BASE_URL}models/mask_base.glb?v=1`;
+    // 使用高级 Hook 自动处理加载与缓存
+    const { scene } = useGLTF(MODEL_URL) as any;
+    
     const materialRef = useRef<THREE.MeshStandardMaterial | null>(null);
 
+    // 初始化材质 (挂载后执行一次)
     useEffect(() => {
-        const loader = new GLTFLoader();
-        loader.load(MODEL_PATH, (gltf) => {
-            gltf.scene.traverse((child: any) => {
-                if (child.isMesh) {
-                    const mat = new THREE.MeshStandardMaterial({
-                        color: '#e7e5e4',
-                        roughness: 0.8,
-                        side: THREE.DoubleSide
-                    });
-                    child.material = mat;
-                    materialRef.current = mat;
-                }
-            });
-            // 归一化模型的基础缩放和位置，防止中心点偏移
-            gltf.scene.scale.set(10, 10, 10);
-            gltf.scene.position.set(0, 0, 0);
-            setModel(gltf.scene);
-        }, undefined, (error) => {
-            console.error('[Stargate] 模型加载失败, 检查路径:', MODEL_PATH, error);
+        if (!scene) return;
+        scene.traverse((child: any) => {
+            if (child.isMesh) {
+                // 如果模型本身没有材质，赋予陶瓷素胎材质
+                const mat = new THREE.MeshStandardMaterial({
+                    color: '#e7e5e4',
+                    roughness: 0.8,
+                    side: THREE.DoubleSide
+                });
+                child.material = mat;
+                materialRef.current = mat;
+            }
         });
-    }, []);
+        // 确保基模在正中心
+        scene.scale.set(10, 10, 10);
+        scene.position.set(0, 0, 0);
+    }, [scene]);
 
-    // 肌肉绑定逻辑 (ARKit 工业标准形态键)
+    // 形态键绑定逻辑 (随 sliders 更新)
     useEffect(() => {
-        if (!model) return;
+        if (!scene) return;
         let faceMesh: any = null;
-        model.traverse((child: any) => {
+        scene.traverse((child: any) => {
             if (child.isMesh && child.morphTargetDictionary) faceMesh = child;
         });
 
@@ -56,9 +53,9 @@ const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
             const inf = faceMesh.morphTargetInfluences;
             const w = sliders;
 
-            // 清理影响值
-            inf.fill(0);
+            inf.fill(0); // 清零
 
+            // 这里对接标准 ARKit 形态键
             if (dict['cheekPuff'] !== undefined) inf[dict['cheekPuff']] = (w.red/100) * 0.8;
             if (dict['jawOpen'] !== undefined) inf[dict['jawOpen']] = (w.red/100) * 0.2;
             if (dict['browDownLeft'] !== undefined) inf[dict['browDownLeft']] = (w.black/100);
@@ -75,11 +72,9 @@ const FaceCapModel = ({ sliders }: { sliders: Record<string, number> }) => {
             materialRef.current.metalness = (sliders.gold / 100) * 0.8;
             materialRef.current.roughness = 0.5 - (sliders.gold / 100) * 0.3;
         }
-    }, [sliders, model]);
+    }, [sliders, scene]);
 
-    if (!model) return <Html center><div className="text-stone-300 bg-black/80 px-6 py-4 rounded-2xl whitespace-nowrap shadow-xl">挂载工业级基底网格中...</div></Html>;
-
-    return <primitive object={model} />;
+    return <primitive object={scene} />;
 };
 
 export default function QinqiangMaskPlugin({ config: _config }: { config: any }) {
@@ -131,10 +126,10 @@ export default function QinqiangMaskPlugin({ config: _config }: { config: any })
                 </div>
                 
                 <div className="p-6 border-t border-white/5">
-                    <button onClick={() => window.parent.postMessage({ type: 'EXPORT_3MF_SOLID' }, '*')} className="w-full py-4 rounded bg-white text-stone-900 hover:bg-stone-200 transition-all font-bold text-sm flex justify-center items-center gap-2 shadow-xl ring-1 ring-white/10 group active:scale-95 duration-200">
+                    <button onClick={() => window.parent.postMessage({ type: 'EXPORT_3MF_SOLID' }, '*')} className="w-full py-4 rounded bg-white text-stone-900 hover:bg-stone-200 transition-all font-bold text-sm flex justify-center items-center gap-4 shadow-xl ring-1 ring-white/10 group active:scale-95 duration-200">
                         <Download className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" /> 导出立体脸谱
                     </button>
-                    <p className="text-[10px] text-stone-600 text-center mt-3 font-mono">INDUSTRIAL BLENDSHAPES | 3MF READY</p>
+                    <p className="text-[10px] text-stone-600 text-center mt-3 font-mono uppercase tracking-widest leading-none">Industrial Blendshapes | 3MF Ready</p>
                 </div>
             </div>
 
@@ -146,7 +141,9 @@ export default function QinqiangMaskPlugin({ config: _config }: { config: any })
                     <Environment preset="studio" />
                     <OrbitControls makeDefault enablePan={true} target={[0, 0, 0]} maxPolarAngle={Math.PI / 1.5} />
                     <Center top>
-                        <FaceCapModel sliders={sliders} />
+                        <Suspense fallback={<Html center><div className="text-stone-300 bg-black/80 px-6 py-4 rounded-2xl whitespace-nowrap shadow-xl">挂载工业级基底网格...</div></Html>}>
+                            <FaceCapModel sliders={sliders} />
+                        </Suspense>
                     </Center>
                     <GizmoHelper alignment="top-right" margin={[60, 60]}>
                         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="white" />
